@@ -1,0 +1,29 @@
+version: "3.9"
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports: ["1883:1883", "9001:9001"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/aclfile:/mosquitto/config/aclfile
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: shop
+    ports: ["5432:5432"]
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+  adminer:
+    image: adminer
+    ports: ["8080:8080"]
+  backend:
+    build: ../services/backend-fastapi
+    env_file: ../env/.env
+    depends_on: [mqtt, db]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+volumes:
+  dbdata:
