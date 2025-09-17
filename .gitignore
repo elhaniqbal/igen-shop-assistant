@@ -204,3 +204,31 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Node / JS / TS
+node_modules/
+.npm/
+dist/
+build/
+.cache/
+.next/
+*.log
+coverage/
+
+
+# C++ / PlatformIO / Arduino
+cmake-build*/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+.pio/
+.DS_Store
+
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
