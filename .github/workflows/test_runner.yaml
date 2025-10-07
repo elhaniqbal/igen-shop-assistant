@@ -1,0 +1,24 @@
+name: Self-Hosted Runner Test
+
+on:
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  test-run:
+    name: Test Repository Access
+    runs-on: self-hosted
+
+    steps:
+      # Step 1: Checkout your repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: List top-level directories
+      - name: List directories
+        run: |
+          echo "Listing repository directories:"
+          find . -maxdepth 1 -type d -not -path '.' | sed 's|^\./||'
+
+      # Step 3: Friendly goodbye message
+      - name: Finish job
+        run: echo "👋 Bye! Job finished successfully."
