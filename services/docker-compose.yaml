@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  # ---- Combined Frontend + Nginx ----
+  frontend:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped # change in production
+    ports:
+      - "8080:8080"
+    environment:
+      # - VITE_API_URL=${VITE_MQTT_URL}
+      - VITE_MQTT_URL=${VITE_MQTT_URL}
+      - NODE_ENV=${NODE_ENV}
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - internal
+      - public
+
+  # ---- Backend (FastAPI) ----
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    restart: no # change in production
+    expose:
+      - "8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - MQTT_BROKER=${MQTT_BROKER} #if inside docker mqtt, localhost otherwise
+      - MQTT_PORT=1883
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data       # ✅ Persistent SQLite storage
+    healthcheck:
+      disable: true # remove for PROD
+    depends_on:
+      sqlite-web:
+        condition: service_started
+      mqtt:
+        condition: service_started
+      mqttx:
+        condition: service_started
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+    #   interval: 5s
+    #   timeout: 3s
+    #   retries: 5
+    networks:
+      - internal
+
+  # ---- SQLite Web GUI ----
+  sqlite-web:
+    image: coleifer/sqlite-web
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    environment:
+      - SQLITE_DATABASE=/data/local_cache.db
+    volumes:
+      - ./data:/data           # ✅ Same volume as backend (shared DB)
+    networks:
+      - internal
+      - public
+
+  # ---- Mosquitto MQTT Broker ----
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    # healthcheck:
+    #   test: ["CMD", "mosquitto_sub", "-h", "localhost", "-t", "$SYS/broker/version", "-C", "1"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 3
+    networks:
+      - internal
+
+  # ---- MQTTX Web GUI ----
+  mqttx:
+    image: emqx/mqttx-web
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    environment:
+      - TZ=UTC
+    networks:
+      - internal
+      - public
+    depends_on:
+      - mqtt
+
+networks:
+  internal:
+    driver: bridge
+  public:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
