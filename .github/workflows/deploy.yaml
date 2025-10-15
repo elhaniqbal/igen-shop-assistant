@@ -73,15 +73,15 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🧹 Cleaning up old containers/images..."
-          sudo -E docker compose down --remove-orphans || true
-          sudo -E docker image prune -f || true
+          docker compose down --remove-orphans || true
+          docker image prune -f || true
 
       - name: Start Docker containers
         working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🚀 Starting services..."
-          sudo -E docker compose up -d
-          sudo -E docker compose ps
+          docker compose up -d
+          docker compose ps
 
       - name: Wait for frontend->backend health
         run: |
@@ -121,11 +121,11 @@ jobs:
       - name: Configure Tailscale Serve (Frontend, SQLite, MQTTX)
         run: |
           echo "🔧 Configuring Tailscale Serve..."
-          sudo tailscale serve --https=443 http://localhost:${{ env.FRONTEND_PORT }} || true
-          sudo tailscale serve /sqlite http://localhost:${{ env.SQLITE_PORT }} || true
-          sudo tailscale serve /mqttx http://localhost:${{ env.MQTTX_PORT }} || true
-          sudo tailscale funnel 443 on || true
-          echo "✅ Tailscale Serve routes:"
+          tailscale serve --https=443 http://localhost:${{ env.FRONTEND_PORT }} || true
+          tailscale serve /sqlite http://localhost:${{ env.SQLITE_PORT }} || true
+          tailscale serve /mqttx http://localhost:${{ env.MQTTX_PORT }} || true
+          tailscale funnel 443 on || true
+          "✅ Tailscale Serve routes:"
           tailscale serve status || true
 
       - name: Deployment summary
