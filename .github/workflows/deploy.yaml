@@ -22,6 +22,16 @@ jobs:
       SQLITE_PORT: 8082
       MQTTX_PORT: 8090
       HEALTH_PATH: /api/healthz
+      APP_ENV: pi
+      DATABASE_URL: sqlite:////app/data/local_cache.db
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+      MQTT_TOPIC: rfid/scan
+      EDGE_HTTP_PORT: 8080
+      NODE_ENV: development
+      VITE_API_URL: http://backend:8000
+      VITE_MQTT_URL: ws://localhost:8080/mqtt
+      SQLITE_PATH: /data/local_cache.db
 
     steps:
       - name: Checkout repository
@@ -37,34 +47,18 @@ jobs:
           echo "👤 Runner user: $(id -u):$(id -g)"
 
       # Ensure a default .env exists (idempotent)
-      - name: Ensure .env exists with sane defaults
+      - name: Ensure services/.env exists with sane defaults
+        shell: bash
         run: |
-          if [ ! -f .env ]; then
-            cat > .env <<'EOF'
-            # -------- Defaults for Pi (can be edited on the device) --------
-            APP_ENV=pi
-            DATABASE_URL=sqlite:////app/data/local_cache.db
-
-            # MQTT
-            MQTT_BROKER=mqtt
-            MQTT_PORT=1883
-            MQTT_TOPIC=rfid/scan
-
-            # Kiosk UI (nginx)
-            EDGE_HTTP_PORT=8080
-            NODE_ENV=development
-
-            # Frontend expects these; nginx proxies /api to backend
-            VITE_API_URL=http://backend:8000
-            VITE_MQTT_URL=ws://localhost:8080/mqtt
-            SQLITE_PATH=/data/local_cache.db
-            EOF
-            echo "Created default .env"
+          if [[ ! -f services/.env ]]; then
+            mkdir -p services
+            printf '%s' "$DEFAULT_ENV" > services/.env
+            echo "Created services/.env"
           else
-            echo ".env exists; leaving as-is"
+            echo "services/.env exists; leaving as-is"
           fi
-          echo "--- .env (redacted) ---"
-          sed 's/=.*/=***redacted***/' .env
+          echo "--- services/.env (redacted) ---"
+          sed 's/=.*/=***redacted***/' services/.env
 
       # 🟢 Tailscale: assume it's already installed & logged in
       - name: Ensure Tailscale service running
