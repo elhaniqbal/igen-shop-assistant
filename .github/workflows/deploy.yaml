@@ -1,8 +1,6 @@
 name: Deploy Stack on Raspberry Pi (Local Build)
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +16,7 @@ jobs:
     env:
       WORKDIR: ${{ github.workspace }}/services
       FRONTEND_PORT: 8080
-      SQLITE_PORT: 8082
+      SQLITE_PORT: 8083
       MQTTX_PORT: 8090
       HEALTH_PATH: /api/healthz
       # content lives in YAML, written to services/.env
@@ -73,15 +71,15 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🧹 Cleaning up old containers/images..."
-          sudo -E docker compose down --remove-orphans || true
-          sudo -E docker image prune -f || true
+          docker compose down --remove-orphans || true
+          docker image prune -f || true
 
       - name: Start Docker containers
         working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🚀 Starting services..."
-          sudo -E docker compose up -d
-          sudo -E docker compose ps
+          docker compose up -d
+          docker compose ps
 
       - name: Wait for frontend->backend health
         run: |
@@ -121,9 +119,9 @@ jobs:
       - name: Configure Tailscale Serve (Frontend, SQLite, MQTTX)
         run: |
           echo "🔧 Configuring Tailscale Serve..."
-          sudo tailscale serve --https=443 http://localhost:${{ env.FRONTEND_PORT }} || true
-          sudo tailscale serve /sqlite http://localhost:${{ env.SQLITE_PORT }} || true
-          sudo tailscale serve /mqttx http://localhost:${{ env.MQTTX_PORT }} || true
+          sudo tailscale serve --https=443 http://127.0.0.1:${{ env.FRONTEND_PORT }} || true
+          sudo tailscale serve --set-path /sqlite http://127.0.0.1:${{ env.SQLITE_PORT }} || true
+          sudo tailscale serve --set-path /mqttx http://127.0.0.1:${{ env.MQTTX_PORT }} || true
           sudo tailscale funnel 443 on || true
           echo "✅ Tailscale Serve routes:"
           tailscale serve status || true
@@ -133,8 +131,6 @@ jobs:
           LAN_IP=$(hostname -I | awk '{print $1}')
           echo "---------------------------------------------"
           echo "✅ Deployment success"
-          echo "LAN:        http://$LAN_IP:${{ env.FRONTEND_PORT }}"
-          echo "Local:      http://127.0.0.1:${{ env.FRONTEND_PORT }}"
           echo ""
           echo "🌍 Tailscale public URLs (via Funnel):"
           tailscale serve status || true
