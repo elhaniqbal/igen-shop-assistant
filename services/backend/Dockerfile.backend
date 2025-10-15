@@ -1,0 +1,54 @@
+# ---- Stage 1: Common base ----
+FROM python:3.11-slim AS base
+
+# No .pyc files + realtime logs
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Create non-root user and working dir
+RUN addgroup --system app && adduser --system --ingroup app app
+WORKDIR /app
+
+# Install system deps (for psycopg2, curl for healthcheck)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Stage 2: Resolve & build dependencies ----
+FROM base AS deps
+
+# Copy only pyproject.toml (keeps caching optimal)
+COPY pyproject.toml /app/
+
+# Generate requirements.txt safely (avoid heredoc issues)
+RUN python -c "\
+import tomllib, pathlib; \
+deps = tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']; \
+pathlib.Path('requirements.txt').write_text('\n'.join(deps))"
+
+# Build all dependencies into wheels (for offline reuse)
+RUN pip install --upgrade pip && \
+    pip wheel --wheel-dir=/wheels -r requirements.txt
+
+# ---- Stage 3: Runtime image ----
+FROM base AS runtime
+
+# Copy prebuilt wheels and install them
+COPY --from=deps /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && rm -rf /wheels
+
+# Copy backend source
+COPY app /app/app
+
+RUN mkdir -p /app/data && chown app:app /app/data
+
+# Switch to non-root user for safety
+# USER app
+
+EXPOSE 8000
+
+# Healthcheck (optional)
+HEALTHCHECK CMD curl -f http://localhost:8000/healthz || exit 1
+
+# Start FastAPI / Flask server
+CMD ["bash", "-c", "chown -R app:app /app/data && python -m uvicorn app.main:app --host=0.0.0.0 --port=8000"]

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Rotary Drum (Walls Spin) — Simulator</title>
+<style>
+:root{
+  --bg:#0e1117;--panel:#151a24;--text:#e9eef5;--muted:#9aa3b2;
+  --ring:#2a3140;--accent:#7bd4ff;--ok:#69db7c;--warn:#ffb86c;--danger:#ff6b6b;
+  --slot-empty:#3b425a;
+  --opening-neutral:#19324f; --opening-edge-neutral:#b4c7ff;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
+h1{margin:0 0 8px;font-size:20px;letter-spacing:.2px}
+.app{display:grid;gap:16px;padding:16px;grid-template-columns:1.4fr 1fr}
+@media(max-width:980px){.app{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid #202636;border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.control{background:#0f1422;border:1px solid #242c3d;color:var(--text);border-radius:10px;padding:9px 12px;min-width:64px}
+.btn{background:#1b2335;border:1px solid #2e3a54;color:var(--text);border-radius:10px;padding:9px 12px;font-weight:600;cursor:pointer;transition:.18s}
+.btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.accent{background:#123a56;border-color:#1b4f73}
+.note{font-size:12px;color:var(--muted)}
+.status{margin-top:8px;font-size:14px;color:var(--muted)}
+.svg-wrap{position:relative;width:100%;aspect-ratio:1}
+.badge{display:inline-flex;align-items:center;gap:8px;background:#0e1525;border:1px solid #23314a;border-radius:999px;padding:6px 10px;font-size:12px;color:#cfe2ff}
+
+/* Drawing */
+.drum{
+  /* 🔧 fixed: rotate in viewBox space so origin never shifts */
+  transform-box:view-box;
+  transform-origin:50% 50%;
+  will-change:transform;
+}
+.ring{fill:none;stroke:var(--ring);stroke-width:18}
+.spoke{stroke:#2b364a;stroke-width:2;vector-effect:non-scaling-stroke;stroke-linecap:round;shape-rendering:geometricPrecision}
+.slice-dot{r:9}
+.slice-label{font-size:11px;fill:#d6deee;text-anchor:middle;dominant-baseline:middle;user-select:none}
+.opening-wedge{fill:var(--opening-neutral);stroke:var(--opening-edge-neutral);stroke-width:2;transition:stroke .2s, opacity .2s;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.opening-wedge.loaded{stroke-width:3.5;opacity:.95}
+.open-label{font-size:12px;fill:#eaf2ff;font-weight:600;text-anchor:middle;dominant-baseline:middle}
+.home-tick{stroke:var(--accent);stroke-width:3}
+.tick{stroke:#465168;stroke-width:1.5;vector-effect:non-scaling-stroke;shape-rendering:geometricPrecision}
+.tick-text{font-size:10px;fill:#aab5cc;text-anchor:middle;dominant-baseline:middle}
+
+/* Fly-away particle for dispense */
+.fly { r:8; opacity:.95; transform-box:fill-box; transform-origin:center;
+       animation: fly 560ms ease-out forwards; }
+@keyframes fly {
+  0%   { transform: translate(0,0) scale(1);   opacity: .95; }
+  70%  { opacity: .9; }
+  100% { transform: translate(var(--dx),var(--dy)) scale(.3); opacity: 0; }
+}
+
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+th,td{padding:9px 8px;text-align:left}
+thead th{color:var(--muted);border-bottom:1px solid #20283a}
+tbody tr+tr td{border-top:1px solid #1e2536}
+td.qty{font-weight:700}
+.tool-pill{display:inline-flex;gap:8px;align-items:center;background:#0f1524;border:1px solid #1f2a43;border-radius:999px;padding:6px 10px}
+.tool-swatch{width:12px;height:12px;border-radius:50%}
+.angle-pill{display:inline-block;font-size:12px;color:#cdd6ea;background:#0f1524;border:1px solid #23304a;border-radius:8px;padding:2px 6px;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="card">
+    <h1>Rotary Drum — Top View (Walls Rotate)</h1>
+    <div class="row" style="margin-bottom:8px">
+      <label>Spokes:</label>
+      <input id="spokesInput" class="control" type="number" min="3" max="36" value="5">
+      <button id="applySpokes" class="btn accent">Apply</button>
+      <div class="spacer"></div>
+      <span id="capBadge" class="badge">Capacity: —</span>
+      <span class="note">Dispense=CW (1 leg, stop there). Return=CCW to nearest empty (non-X), then park at nearest empty (incl. X) so window ends empty.</span>
+    </div>
+    <div class="svg-wrap">
+      <svg id="drumSvg" viewBox="0 0 500 500" aria-label="Rotary drum visual"></svg>
+    </div>
+    <div id="moveStatus" class="status">Ready.</div>
+  </div>
+
+  <div class="card">
+    <h1>Inventory</h1>
+    <div class="note">Angles show the next move from the current opening.</div>
+    <table id="invTable">
+      <thead><tr><th>Tool</th><th>Qty</th><th>Dispense (CW)</th><th>Return (CCW)</th><th>Actions</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+/* ---------- Config ---------- */
+const SPEED_DEG_PER_SEC = 60;
+const PAUSE_BETWEEN_MOVES_MS = 220;
+
+/* ---------- State ---------- */
+const COLORS={wrench:'#6bc8ff',hammer:'#ffb86c',driver:'#a0ffa0',pliers:'#ff8aa8',marker:'#d2a6ff'};
+const state={ N:5, pitch:72, radius:200, center:{x:250,y:250}, svg:null, currentIndex:0, slots:[], angleAccum:0, seq:false, X:0 };
+
+/* ---------- Utils ---------- */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const polar=(cx,cy,r,deg)=>{const rad=(deg-90)*Math.PI/180;return{x:cx+r*Math.cos(rad),y:cy+r*Math.sin(rad)}};
+function setSeq(b){state.seq=b; document.querySelectorAll('button, input.control').forEach(el=>el.disabled=b&&el.id!=='applySpokes')}
+function updateStatus(msg,kind=''){const el=document.getElementById('moveStatus');const c=kind==='ok'?'var(--ok)':kind==='warn'?'var(--warn)':kind==='danger'?'var(--danger)':'var(--muted)';el.style.color=c;el.textContent=msg}
+const maxCapacity=()=>state.N-1;
+const usedCapacity=()=>state.slots.reduce((c,s,i)=>c+((i!==state.X && s.tool)?1:0),0);
+function updateCapacityBadge(){document.getElementById('capBadge').textContent=`Capacity: ${usedCapacity()}/${maxCapacity()}`;}
+function constantTransition(deg){const dur=Math.max(0.25,Math.abs(deg)/SPEED_DEG_PER_SEC);const g=state.svg.querySelector('.drum');g.style.transition=`transform ${dur}s cubic-bezier(.25,.8,.25,1)`;}
+function applyRotation(){const g=state.svg.querySelector('.drum'); if(g) g.style.transform=`rotate(${state.angleAccum}deg)`;}
+function snapAngle(){state.angleAccum=Math.round(state.angleAccum/state.pitch)*state.pitch}
+
+/* ---------- Seed ---------- */
+function seedSlots(N){
+  const tools=['wrench','hammer','driver','pliers','marker'];
+  const s=Array(N).fill(null).map(()=>({tool:null}));
+  let k=0;
+  for(let i=1;i<N;i++){ s[i].tool = tools[k%tools.length]; k++; }
+  s[state.X].tool = null;
+  return s;
+}
+
+/* ---------- Find next ---------- */
+function findNextCW(pred){for(let st=1;st<state.N;st++){const idx=(state.currentIndex - st + state.N)%state.N;if(pred(idx))return{idx,steps:st,deg:st*state.pitch};}return null;}
+function findNextCCW(pred){for(let st=1;st<state.N;st++){const idx=(state.currentIndex + st)%state.N;if(pred(idx))return{idx,steps:st,deg:st*state.pitch};}return null;}
+function nearestEmptyShortest(excludeIdx=null){
+  let best=null;
+  for(let i=0;i<state.N;i++){
+    if(i===excludeIdx) continue;
+    if(state.slots[i].tool!==null) continue;
+    const cw = (state.currentIndex - i + state.N)%state.N;
+    const ccw = (i - state.currentIndex + state.N)%state.N;
+    const steps = Math.min(cw,ccw);
+    const dir = (cw<=ccw)?'CW':'CCW';
+    if(best===null || steps<best.steps || (steps===best.steps && i===state.X)){
+      best={idx:i,steps,deg:steps*state.pitch,dir};
+    }
+  }
+  return best;
+}
+
+/* ---------- SVG ---------- */
+function openingPath(rOuter){const {x:cx,y:cy}=state.center,R=rOuter;const p1=polar(cx,cy,R,0),p2=polar(cx,cy,R,state.pitch);return`M ${cx},${cy} L ${p1.x},${p1.y} A ${R},${R} 0 0 1 ${p2.x},${p2.y} Z`;}
+function buildTicks(g){
+  const {x:cx,y:cy}=state.center,r=state.radius;
+  for(let k=0;k<state.N;k++){
+    const a=k*state.pitch;
+    const p1=polar(cx,cy,r+6,a),p2=polar(cx,cy,r-10,a);
+    const ln=document.createElementNS('http://www.w3.org/2000/svg','line');
+    ln.setAttribute('x1',p1.x);ln.setAttribute('y1',p1.y);
+    ln.setAttribute('x2',p2.x);ln.setAttribute('y2',p2.y);
+    ln.setAttribute('class','tick');g.appendChild(ln);
+    const pt=polar(cx,cy,r+22,a);
+    const txt=document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x',pt.x);txt.setAttribute('y',pt.y);
+    txt.setAttribute('class','tick-text');txt.textContent=`${Math.round((k*state.pitch)%360)}°`;
+    g.appendChild(txt);
+  }
+}
+function renderSVG(){
+  const svg=state.svg; svg.innerHTML=''; const {x:cx,y:cy}=state.center,r=state.radius;
+
+  const gBack=svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','g'));
+  const ring=document.createElementNS('http://www.w3.org/2000/svg','circle'); ring.setAttribute('cx',cx);ring.setAttribute('cy',cy);ring.setAttribute('r',r);ring.setAttribute('class','ring'); gBack.appendChild(ring);
+  buildTicks(gBack);
+  const t1=polar(cx,cy,r+10,0),t2=polar(cx,cy,r-20,0);
+  const home=document.createElementNS('http://www.w3.org/2000/svg','line'); home.setAttribute('x1',t1.x);home.setAttribute('y1',t1.y);home.setAttribute('x2',t2.x);home.setAttribute('y2',t2.y);home.setAttribute('class','home-tick'); gBack.appendChild(home);
+
+  const gDrum=svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','g')); gDrum.classList.add('drum');
+
+  for(let i=0;i<state.N;i++){
+    const a0=i*state.pitch, aC=a0+state.pitch/2;
+    const pIn=polar(cx,cy,30,a0), pOut=polar(cx,cy,r,a0);
+    const s=document.createElementNS('http://www.w3.org/2000/svg','line');
+    s.setAttribute('x1',pIn.x); s.setAttribute('y1',pIn.y);
+    s.setAttribute('x2',pOut.x); s.setAttribute('y2',pOut.y);
+    s.setAttribute('class','spoke'); gDrum.appendChild(s);
+
+    if(i===state.currentIndex) continue;
+
+    const pm=polar(cx,cy,r-14,aC);
+    const dot=document.createElementNS('http://www.w3.org/2000/svg','circle');
+    dot.setAttribute('cx',pm.x); dot.setAttribute('cy',pm.y);
+    const tool=state.slots[i].tool;
+    dot.setAttribute('fill', tool ? (COLORS[tool]||'#cfd6e6') : 'var(--slot-empty)');
+    dot.setAttribute('class','slice-dot'); gDrum.appendChild(dot);
+
+    const pl=polar(cx,cy,r-55,aC);
+    const lab=document.createElementNS('http://www.w3.org/2000/svg','text');
+    lab.setAttribute('x',pl.x); lab.setAttribute('y',pl.y); lab.setAttribute('class','slice-label');
+    lab.textContent=tool?`${i} • ${tool}`:`${i} • —`;
+    gDrum.appendChild(lab);
+  }
+
+  const gTop=svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','g'));
+  gTop.setAttribute('id','overlay');
+  const open=document.createElementNS('http://www.w3.org/2000/svg','path'); open.setAttribute('d',openingPath(r+6)); open.setAttribute('class','opening-wedge'); gTop.appendChild(open);
+  const openCenter=polar(cx,cy,r-55,state.pitch/2);
+  const openLab=document.createElementNS('http://www.w3.org/2000/svg','text');
+  openLab.setAttribute('x',openCenter.x); openLab.setAttribute('y',openCenter.y); openLab.setAttribute('class','open-label');
+  openLab.textContent = state.slots[state.currentIndex].tool ? `${state.currentIndex} • ${state.slots[state.currentIndex].tool}` : (state.currentIndex===state.X ? 'X • OPEN' : 'OPEN');
+  gTop.appendChild(openLab);
+
+  applyRotation(); updateCapacityBadge();
+}
+function flashLoaded(color){
+  const p=state.svg.querySelector('.opening-wedge');
+  if(!p) return;
+  p.classList.add('loaded');
+  p.style.stroke = color || 'var(--opening-edge-neutral)';
+  setTimeout(()=>{ p.classList.remove('loaded'); p.style.stroke='var(--opening-edge-neutral)'; }, 260);
+}
+function flyOut(color){
+  const {x:cx,y:cy}=state.center, r=state.radius, a=state.pitch/2;
+  const start=polar(cx,cy,r-20,a), end=polar(cx,cy,r+60,a);
+  const dx=end.x - start.x, dy=end.y - start.y;
+
+  const gTop = state.svg.querySelector('#overlay');
+  const c=document.createElementNS('http://www.w3.org/2000/svg','circle');
+  c.setAttribute('cx',start.x); c.setAttribute('cy',start.y);
+  c.setAttribute('class','fly'); c.style.setProperty('--dx',`${dx}px`); c.style.setProperty('--dy',`${dy}px`);
+  c.setAttribute('fill', color || '#fff');
+  gTop.appendChild(c);
+  setTimeout(()=>c.remove(), 700);
+}
+
+/* ---------- Angles + table ---------- */
+function nextDispenseAngle(tool){const hit=findNextCW(i=>state.slots[i].tool===tool);return hit?`CW ${hit.deg.toFixed(1)}° → #${hit.idx}`:'—'}
+function nextReturnAngle(){
+  const hereEmpty = (!state.slots[state.currentIndex].tool && state.currentIndex!==state.X);
+  if(hereEmpty) return 'CCW 0° → #' + state.currentIndex;
+  const hit=findNextCCW(i=>!state.slots[i].tool && i!==state.X);
+  return hit?`CCW ${hit.deg.toFixed(1)}° → #${hit.idx}`:'—';
+}
+function computeInventory(){const map=new Map(); for(const {tool} of state.slots) if(tool) map.set(tool,(map.get(tool)||0)+1); for(const k of Object.keys(COLORS)) if(!map.has(k)) map.set(k,0); return Array.from(map.entries()).map(([tool,qty])=>({tool,qty})).sort((a,b)=>a.tool.localeCompare(b.tool));}
+function renderTable(){
+  const tbody=document.querySelector('#invTable tbody'); tbody.innerHTML='';
+  const rows=computeInventory(); const retAngle=nextReturnAngle(); const full=(usedCapacity()>=maxCapacity());
+  for(const {tool,qty} of rows){
+    const tr=document.createElement('tr');
+    const tdTool=document.createElement('td'); const pill=document.createElement('span'); pill.className='tool-pill';
+    const sw=document.createElement('span'); sw.className='tool-swatch'; sw.style.background=COLORS[tool]||'#cfd6e6';
+    pill.appendChild(sw); pill.appendChild(document.createTextNode(tool)); tdTool.appendChild(pill);
+    const tdQty=document.createElement('td'); tdQty.className='qty'; tdQty.textContent=qty;
+    const tdDA=document.createElement('td'); const da=nextDispenseAngle(tool);
+    tdDA.innerHTML = da!=='—' ? `${da} <span class="angle-pill">CW</span>` : '—';
+    const tdRA=document.createElement('td'); tdRA.innerHTML = (!full && retAngle!=='—') ? `${retAngle} <span class="angle-pill">CCW</span>` : '— (full)';
+    const tdAct=document.createElement('td');
+    const bD=document.createElement('button'); bD.className='btn accent'; bD.textContent='Dispense'; bD.disabled = qty<=0 || state.seq; bD.onclick=()=>handleDispense(tool);
+    const bR=document.createElement('button'); bR.className='btn'; bR.style.marginLeft='8px'; bR.textContent='Return';
+    const canReturn = state.slots.some((s,i)=>!s.tool && i!==state.X);
+    bR.disabled = !canReturn || state.seq;
+    bR.onclick=()=>handleReturn(tool);
+    tdAct.appendChild(bD); tdAct.appendChild(bR);
+    tr.appendChild(tdTool); tr.appendChild(tdQty); tr.appendChild(tdDA); tr.appendChild(tdRA); tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  }
+}
+
+/* ---------- Motion ---------- */
+function rotateStepsCW(steps){
+  if(steps<=0) return Promise.resolve();
+  return new Promise(res=>{
+    const deg=+steps*state.pitch; constantTransition(deg);
+    state.angleAccum += deg; applyRotation();
+    const g=state.svg.querySelector('.drum');
+    const onEnd=()=>{ g.removeEventListener('transitionend', onEnd);
+      state.currentIndex=(state.currentIndex - steps + state.N)%state.N;
+      snapAngle(); renderSVG(); renderTable(); res();
+    };
+    g.addEventListener('transitionend', onEnd, {once:true});
+  });
+}
+function rotateStepsCCW(steps){
+  if(steps<=0) return Promise.resolve();
+  return new Promise(res=>{
+    const deg=-steps*state.pitch; constantTransition(deg);
+    state.angleAccum += deg; applyRotation();
+    const g=state.svg.querySelector('.drum');
+    const onEnd=()=>{ g.removeEventListener('transitionend', onEnd);
+      state.currentIndex=(state.currentIndex + steps)%state.N;
+      snapAngle(); renderSVG(); renderTable(); res();
+    };
+    g.addEventListener('transitionend', onEnd, {once:true});
+  });
+}
+function rotateShortestTo(index){
+  if(index===state.currentIndex) return Promise.resolve();
+  const cw = (state.currentIndex - index + state.N)%state.N;
+  const ccw = (index - state.currentIndex + state.N)%state.N;
+  return (cw<=ccw) ? rotateStepsCW(cw) : rotateStepsCCW(ccw);
+}
+
+/* ---------- Actions ---------- */
+async function handleDispense(tool){
+  if(state.seq) return;
+  setSeq(true);
+  try{
+    const hit=findNextCW(i=>state.slots[i].tool===tool);
+    if(!hit){updateStatus(`No ${tool} to dispense.`, 'warn'); return;}
+    updateStatus(`Dispense ${tool}: CW ${hit.deg.toFixed(1)}° to #${hit.idx}…`);
+    await rotateStepsCW(hit.steps);
+    flyOut(COLORS[tool]);
+    state.slots[state.currentIndex].tool=null;
+    updateStatus(`Dispensed 1 × ${tool} at #${state.currentIndex}. Window = OPEN.`, 'ok');
+  } finally {
+    setSeq(false); renderSVG(); renderTable();
+  }
+}
+
+async function handleReturn(tool){
+  if(state.seq) return;
+  setSeq(true);
+  try{
+    if(!(state.currentIndex!==state.X && !state.slots[state.currentIndex].tool)){
+      const leg1=findNextCCW(i=>!state.slots[i].tool && i!==state.X);
+      if(!leg1){ updateStatus(`No empty slot (non-X) available.`, 'warn'); return; }
+      updateStatus(`Return ${tool}: CCW ${leg1.deg.toFixed(1)}° to #${leg1.idx}…`);
+      await rotateStepsCCW(leg1.steps);
+    }
+    state.slots[state.currentIndex].tool=tool;
+    flashLoaded(COLORS[tool]);
+    updateStatus(`Returned 1 × ${tool} to #${state.currentIndex}.`, 'ok');
+
+    await sleep(PAUSE_BETWEEN_MOVES_MS);
+    const park=nearestEmptyShortest(state.currentIndex);
+    if(park){
+      updateStatus(`Parking to empty: ${park.dir} ${park.deg.toFixed(1)}° → #${park.idx}…`);
+      if(park.dir==='CW') await rotateStepsCW(park.steps); else await rotateStepsCCW(park.steps);
+      await sleep(PAUSE_BETWEEN_MOVES_MS);
+      updateStatus(`Window = OPEN.`, 'ok');
+    }else{
+      updateStatus(`Drum is full after return.`, 'warn');
+    }
+  } finally {
+    setSeq(false); renderSVG(); renderTable();
+  }
+}
+
+/* ---------- Spokes / Boot ---------- */
+function applySpokes(){
+  const N=clamp(parseInt(document.getElementById('spokesInput').value||'5',10),3,36);
+  state.N=N; state.pitch=360/N; state.X=0;
+  state.slots=seedSlots(N);
+  state.currentIndex = state.X;
+  state.angleAccum  = state.currentIndex*state.pitch;
+  snapAngle(); renderSVG(); renderTable();
+  updateStatus(`Configured ${N} spokes. Max capacity = ${N-1}.`, 'ok');
+}
+function boot(){
+  state.svg=document.getElementById('drumSvg');
+  state.pitch=360/state.N; state.X=0;
+  state.slots=seedSlots(state.N);
+  state.currentIndex = state.X;
+  state.angleAccum  = state.currentIndex*state.pitch;
+  snapAngle(); renderSVG(); renderTable(); updateCapacityBadge();
+  document.getElementById('applySpokes').addEventListener('click', applySpokes);
+}
+boot();
+</script>
+</body>
+</html>

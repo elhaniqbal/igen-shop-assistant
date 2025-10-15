@@ -1,49 +1,12 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>IGEN Shop Assistant</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-  <!-- Scan Screen -->
-  <section id="scanScreen" class="screen active">
-    <div class="scan-wrapper">
-      <h1 class="brand">IGEN <span>Shop Assistant</span></h1>
-      <h2>Hello!</h2>
-      <p>Scan your student card to begin</p>
-      <div class="scanner-graphic"></div>
-      <p class="hint">Press <kbd>Enter</kbd> to simulate scan</p>
-    </div>
-  </section>
-
-  <!-- Main Kiosk -->
-  <section id="mainScreen" class="screen">
-    <header class="topbar">
-      <div class="title">IGEN Shop Assistant</div>
-      <div class="user" id="userDisplay">User: —</div>
-    </header>
-
-    <main class="catalog" id="catalog"></main>
-
-    <footer class="footer">
-      <button id="btnHome" class="btn secondary">Back</button>
-      <button id="btnDispense" class="btn primary">Dispense Selected Tool</button>
-    </footer>
-  </section>
-
-  <!-- Overlay -->
-  <div id="overlay" class="overlay hidden">
-    <div class="overlay-box">
-      <div class="spinner"></div>
-      <h2 id="overlayTitle">Processing...</h2>
-      <p id="overlayText">Please wait while the cabinet dispenses your tool.</p>
-      <button id="btnOverlayClose" class="btn primary hidden">Done</button>
-    </div>
-  </div>
-
-<script src="app.js"></script>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

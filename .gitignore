@@ -142,6 +142,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+env-430/
+
+# SQLITE DB stores
+data/
 
 # Spyder project settings
 .spyderproject
