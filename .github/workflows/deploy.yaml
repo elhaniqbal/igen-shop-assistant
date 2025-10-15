@@ -60,29 +60,6 @@ jobs:
           echo "--- services/.env (redacted) ---"
           sed 's/=.*/=***redacted***/' services/.env
 
-      # 🟢 Tailscale: assume it's already installed & logged in
-      - name: Ensure Tailscale service running
-        run: |
-          if ! systemctl is-active --quiet tailscaled; then
-            echo "🔄 Starting Tailscale service..."
-            sudo systemctl enable --now tailscaled
-          fi
-          echo "✅ Tailscale service status:"
-          sudo systemctl status tailscaled --no-pager || true
-          echo "🌐 Tailnet peers:"
-          tailscale status || true
-
-      # Expose all web UIs via Tailscale Serve/Funnel
-      - name: Configure Tailscale Serve (Frontend, SQLite, MQTTX)
-        run: |
-          echo "🔧 Configuring Tailscale Serve..."
-          sudo tailscale serve --https=443 http://localhost:${{ env.FRONTEND_PORT }} || true
-          sudo tailscale serve /sqlite http://localhost:${{ env.SQLITE_PORT }} || true
-          sudo tailscale serve /mqttx http://localhost:${{ env.MQTTX_PORT }} || true
-          sudo tailscale funnel 443 on || true
-          echo "✅ Tailscale Serve routes:"
-          tailscale serve status || true
-
       - name: Stop previous containers
         run: |
           echo "🧹 Cleaning up old containers/images..."
@@ -124,6 +101,28 @@ jobs:
 
       - name: Tail backend logs (last 100 lines)
         run: docker compose logs --tail=100 backend || true
+      
+        # 🟢 Tailscale: assume it's already installed & logged in
+      - name: Ensure Tailscale service running
+        run: |
+          if ! systemctl is-active --quiet tailscaled; then
+            echo "🔄 Starting Tailscale service..."
+            sudo systemctl enable --now tailscaled
+          fi
+          echo "✅ Tailscale service status:"
+          sudo systemctl status tailscaled --no-pager || true
+          tailscale status || true
+
+      # Expose all web UIs via Tailscale Serve/Funnel
+      - name: Configure Tailscale Serve (Frontend, SQLite, MQTTX)
+        run: |
+          echo "🔧 Configuring Tailscale Serve..."
+          sudo tailscale serve --https=443 http://localhost:${{ env.FRONTEND_PORT }} || true
+          sudo tailscale serve /sqlite http://localhost:${{ env.SQLITE_PORT }} || true
+          sudo tailscale serve /mqttx http://localhost:${{ env.MQTTX_PORT }} || true
+          sudo tailscale funnel 443 on || true
+          echo "✅ Tailscale Serve routes:"
+          tailscale serve status || true
 
       - name: Deployment summary
         run: |
