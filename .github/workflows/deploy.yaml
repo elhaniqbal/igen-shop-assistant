@@ -39,6 +39,7 @@ jobs:
 
       - name: Environment diagnostics
         run: |
+          
           echo "✅ Hostname: $(hostname)"
           echo "🏗️ Architecture: $(uname -m)"
           echo "🐳 Docker version: $(docker --version)"
@@ -66,16 +67,11 @@ jobs:
           docker compose down --remove-orphans || true
           docker image prune -f || true
 
-      - name: Build all Docker images locally (ARM64)
-        run: |
-          echo "🏗️ Building stack images..."
-          docker compose build --pull --force-rm
-          echo "✅ Build complete."
 
-      - name: Start stack
+      - name: Start Docker containers
         run: |
           echo "🚀 Starting services..."
-          docker compose up -d
+          cd ${{ github.workspace }}/services && docker compose up -d
           docker compose ps
 
       - name: Wait for frontend->backend health
