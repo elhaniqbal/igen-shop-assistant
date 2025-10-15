@@ -59,7 +59,7 @@ services:
     ports:
       - "8082:8080"
     environment:
-      - SQLITE_DATABASE=/data/local_cache.db
+      - SQLITE_DATABASE=${SQLITE_PATH}
     volumes:
       - ./data:/data           # ✅ Same volume as backend (shared DB)
     networks:
