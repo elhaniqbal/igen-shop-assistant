@@ -3,7 +3,6 @@ name: Deploy Stack on Raspberry Pi (Local Build)
 on:
   push:
     branches: [ "main" ]
-    
   workflow_dispatch:
 
 concurrency:
@@ -22,16 +21,25 @@ jobs:
       SQLITE_PORT: 8082
       MQTTX_PORT: 8090
       HEALTH_PATH: /api/healthz
-      APP_ENV: pi
-      DATABASE_URL: sqlite:////app/data/local_cache.db
-      MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
-      MQTT_TOPIC: rfid/scan
-      EDGE_HTTP_PORT: 8080
-      NODE_ENV: development
-      VITE_API_URL: http://backend:8000
-      VITE_MQTT_URL: ws://localhost:8080/mqtt
-      SQLITE_PATH: /data/local_cache.db
+      # content lives in YAML, written to services/.env
+      DEFAULT_ENV: |
+        # -------- Defaults for Pi (can be edited on the device) --------
+        APP_ENV=pi
+        DATABASE_URL=sqlite:////app/data/local_cache.db
+
+        # MQTT
+        MQTT_BROKER=mqtt
+        MQTT_PORT=1883
+        MQTT_TOPIC=rfid/scan
+
+        # Kiosk UI (nginx)
+        EDGE_HTTP_PORT=8080
+        NODE_ENV=development
+
+        # Frontend expects these; nginx proxies /api to backend
+        VITE_API_URL=http://backend:8000
+        VITE_MQTT_URL=ws://localhost:8080/mqtt
+        SQLITE_PATH=/data/local_cache.db
 
     steps:
       - name: Checkout repository
@@ -39,15 +47,15 @@ jobs:
 
       - name: Environment diagnostics
         run: |
-          
           echo "✅ Hostname: $(hostname)"
           echo "🏗️ Architecture: $(uname -m)"
           echo "🐳 Docker version: $(docker --version)"
           echo "📦 Compose version: $(docker compose version)"
           echo "📁 Workdir: $PWD"
           echo "👤 Runner user: $(id -u):$(id -g)"
+          echo "🔐 docker.sock perms: $(ls -l /var/run/docker.sock || true)"
+          groups
 
-      # Ensure a default .env exists (idempotent)
       - name: Ensure services/.env exists with sane defaults
         shell: bash
         run: |
@@ -62,17 +70,18 @@ jobs:
           sed 's/=.*/=***redacted***/' services/.env
 
       - name: Stop previous containers
+        working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🧹 Cleaning up old containers/images..."
-          docker compose down --remove-orphans || true
-          docker image prune -f || true
-
+          sudo -E docker compose down --remove-orphans || true
+          sudo -E docker image prune -f || true
 
       - name: Start Docker containers
+        working-directory: ${{ env.WORKDIR }}
         run: |
           echo "🚀 Starting services..."
-          cd ${{ github.workspace }}/services && docker compose up -d
-          docker compose ps
+          sudo -E docker compose up -d
+          sudo -E docker compose ps
 
       - name: Wait for frontend->backend health
         run: |
@@ -86,7 +95,7 @@ jobs:
             echo "Attempt $i..."
           done
           echo "❌ Health check failed. Dumping logs."
-          docker compose logs --no-color
+          cd "${{ env.WORKDIR }}" && sudo -E docker compose logs --no-color || true
           exit 1
 
       - name: Quick route check (/api/ping)
@@ -96,9 +105,9 @@ jobs:
             || (echo "❌ /api/ping failed" && exit 1)
 
       - name: Tail backend logs (last 100 lines)
-        run: docker compose logs --tail=100 backend || true
-      
-        # 🟢 Tailscale: assume it's already installed & logged in
+        working-directory: ${{ env.WORKDIR }}
+        run: sudo -E docker compose logs --tail=100 backend || true
+
       - name: Ensure Tailscale service running
         run: |
           if ! systemctl is-active --quiet tailscaled; then
@@ -109,7 +118,6 @@ jobs:
           sudo systemctl status tailscaled --no-pager || true
           tailscale status || true
 
-      # Expose all web UIs via Tailscale Serve/Funnel
       - name: Configure Tailscale Serve (Frontend, SQLite, MQTTX)
         run: |
           echo "🔧 Configuring Tailscale Serve..."
