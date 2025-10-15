@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 30
 
     env:
-      WORKDIR: ${{ github.workspace }}
+      WORKDIR: ${{ github.workspace }}/services
       FRONTEND_PORT: 8080
       SQLITE_PORT: 8082
       MQTTX_PORT: 8090
