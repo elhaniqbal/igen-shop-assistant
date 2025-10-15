@@ -57,6 +57,7 @@ jobs:
             # Frontend expects these; nginx proxies /api to backend
             VITE_API_URL=http://backend:8000
             VITE_MQTT_URL=ws://localhost:8080/mqtt
+            SQLITE_PATH=/data/local_cache.db
             EOF
             echo "Created default .env"
           else
