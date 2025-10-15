@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ---- Combined Frontend + Nginx ----
   frontend:
@@ -38,7 +36,7 @@ services:
     healthcheck:
       disable: true # remove for PROD
     depends_on:
-      sqlite-web:
+      sqlite-web2:
         condition: service_started
       mqtt:
         condition: service_started
@@ -52,16 +50,31 @@ services:
     networks:
       - internal
 
-  # ---- SQLite Web GUI ----
-  sqlite-web:
-    image: coleifer/sqlite-web
+  # # ---- SQLite Web GUI ----
+  # sqlite-web:
+  #   image: coleifer/sqlite-web
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8082:8080"
+  #   environment:
+  #     - SQLITE_DATABASE=${SQLITE_PATH}
+  #   volumes:
+  #     - ./data:/data           # ✅ Same volume as backend (shared DB)
+  #   networks:
+  #     - internal
+  #     - public
+
+  sqlite-web2:
+    build:
+      context: .
+      dockerfile: Dockerfile.sqlite-web
     restart: unless-stopped
     ports:
-      - "8082:8080"
+      - "8083:8080"
     environment:
       - SQLITE_DATABASE=${SQLITE_PATH}
     volumes:
-      - ./data:/data           # ✅ Same volume as backend (shared DB)
+      - ./data:/data
     networks:
       - internal
       - public
