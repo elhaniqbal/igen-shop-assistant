@@ -1,0 +1,98 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "2e8acbdf-6454-43df-8e2e-60f419a2777f")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 104.14 66.04)
+		(size 52.07 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "ade9448f-4e1c-4399-af60-917becf155de")
+		(property "Sheetname" "ESP32+CAN+TMC2208"
+			(at 104.14 65.3284 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "motor_controller_slave.kicad_sch"
+			(at 104.14 92.0246 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "igen-shop-assistant"
+				(path "/2e8acbdf-6454-43df-8e2e-60f419a2777f"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 208.28 64.77)
+		(size 24.13 24.13)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "fb8a79f5-7e01-4c8e-bff8-07315cf3eff4")
+		(property "Sheetname" "Raspberry Pi"
+			(at 208.28 64.0584 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "raspberrypi.kicad_sch"
+			(at 208.28 89.4846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "igen-shop-assistant"
+				(path "/2e8acbdf-6454-43df-8e2e-60f419a2777f"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,10 @@
+### Missing 3D models - created on 2025-12-04 18:44
+### Printed by checking_3D_models plugin
+Board file: C:/Users/e31iq/Desktop/UBC Academics/Final Year/IGEN 430/KiCad/igen-shop-assistant/igen-shop-assistant.kicad_pcb
+3D missing models written to:
+C:\Users\e31iq\Desktop\UBC Academics\Final Year\IGEN 430\KiCad\igen-shop-assistant\igen-shop-assistant_missing3Dmodels.txt
+-------
+('L1', 'C:\\Program Files\\KiCad\\9.0\\share\\kicad\\3dmodels\\Inductor_SMD.3dshapes\\L_6.3x6.3_H3.step')
+-------
+NUM of 3D missing models:1
+checked extensions ['.stp', '.step', '.stpZ']
