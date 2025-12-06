@@ -1,98 +1,81 @@
-/*
-  ESP32 + TMC2208 + AS5600  (Persistent zero & config via NVS)
-  ------------------------------------------------------------
-  Pins (change if needed):
-    DIR  = GPIO 2
-    STEP = GPIO 5
-    EN   = -1  (set to a GPIO if you wired EN; LOW enables TMC2208)
-    SDA  = GPIO 21  (AS5600)
-    SCL  = GPIO 22  (AS5600)
-
-  Serial (115200) commands:
-    help
-    scan
-    stat
-    zero
-    setslot <0..4>
-    setspr <stepsPerRev>     (e.g., 1600)
-    setdps <degPerSec>       (e.g., 120)
-    setdir <0|1>             (1 = DIR=HIGH is CW)
-    test <deg>
-    motor_test
-*/
-
 #include <Arduino.h>
 #include <Wire.h>
-#include <Preferences.h>
 #include <math.h>
+#include <Preferences.h>
 
-/* ----------------------------- Pins ----------------------------- */
-const int PIN_DIR  = 2;
-const int PIN_STEP = 5;
-const int PIN_EN   = -1;   // -1 if not connected (LOW enables TMC2208)
+// ---------------- Pins ----------------
+#define STEP_PIN 18
+#define DIR_PIN  19
+#define EN_PIN   32
+#define MS1_PIN  33
+#define MS2_PIN  25
 
-/* --------------------------- NVS (Preferences) ------------------ */
-Preferences prefs;
-struct Config {
-  uint16_t encZeroRaw;       // AS5600 raw zero (0..4095)
-  int8_t   currentSlotIndex; // 0..4 for 5-spoke wheel
-  uint16_t stepsPerRev;      // 200 * microstep (e.g., 1600)
-  uint16_t ticksPerRev;      // AS5600 = 4096
-  uint8_t  dirCwHigh;        // 1 if DIR=HIGH is CW
-  float    degPerSec;        // default angular speed
-};
-Config conf;
+// AS5600 I2C
+#define I2C_SDA 21
+#define I2C_SCL 22
 
-void loadDefaults() {
-  conf.encZeroRaw       = 0;
-  conf.currentSlotIndex = 0;
-  conf.stepsPerRev      = 1600;
-  conf.ticksPerRev      = 4096;
-  conf.dirCwHigh        = 1;
-  conf.degPerSec        = 90.0f;
-}
-
-void nvsSave() {
-  prefs.begin("disp", false);
-  prefs.putUShort("zero", conf.encZeroRaw);
-  prefs.putChar("slot", conf.currentSlotIndex);
-  prefs.putUShort("spr", conf.stepsPerRev);
-  prefs.putUShort("tpr", conf.ticksPerRev);
-  prefs.putUChar("cw",  conf.dirCwHigh);
-  prefs.putFloat("dps", conf.degPerSec);
-  prefs.end();
-}
-
-bool nvsLoad() {
-  prefs.begin("disp", true);
-  bool have = prefs.isKey("spr"); // presence check (first-boot if false)
-  if (have) {
-    conf.encZeroRaw       = prefs.getUShort("zero", 0);
-    conf.currentSlotIndex = prefs.getChar("slot", 0);
-    conf.stepsPerRev      = prefs.getUShort("spr", 1600);
-    conf.ticksPerRev      = prefs.getUShort("tpr", 4096);
-    conf.dirCwHigh        = prefs.getUChar("cw", 1);
-    conf.degPerSec        = prefs.getFloat("dps", 90.0f);
-  }
-  prefs.end();
-  return have;
-}
-
-/* --------------------------- Encoder ---------------------------- */
+// ---------------- AS5600 constants ----------------
 static const uint8_t AS5600_ADDR      = 0x36;
-static const uint8_t REG_STATUS       = 0x0B;
 static const uint8_t REG_RAW_ANGLE_H  = 0x0C;
-static const uint8_t REG_ANGLE_H      = 0x0E;
-#define USE_FILTERED_ANGLE 0
+static const int     TICKS_PER_REV    = 4096;
 
-/* --------------------------- Logging ---------------------------- */
-void say(const String &msg) {
-  Serial.print("["); Serial.print(millis()); Serial.print("] ");
-  Serial.println(msg);
+// Zero ref for single-turn angle (debug)
+static uint16_t encZeroRaw = 0;
+
+// ---------------- Motor / gearbox config ----------------
+static const int   BASE_STEPS_PER_REV = 200;   // 1.8° motor
+int   microstep   = 16;                        // MUST match real driver microstep
+int   stepsPerRev = BASE_STEPS_PER_REV * 16;   // 3200 if microstep=16
+
+// GEARBOX: motor revs per 1 wheel rev
+static const float GEAR_RATIO = 10.0f;
+
+// high-level speed: WHEEL degrees per second
+float degPerSecWheel = 90.0f;
+
+static const uint32_t MIN_US_HALF = 200;
+static const bool dirCwHigh       = true;   // DIR=HIGH = CW (flip if wrong)
+
+// ---------------- Drum geometry & inventory ----------------
+static const uint8_t DRUM_N    = 5;
+static const float   PITCH_DEG = 360.0f / (float)DRUM_N;   // wheel deg per slot
+
+// Default logical state after burn / first boot
+//  - slot 0 = open slice at the window
+//  - slots array = {0,1,1,1,1}
+static const uint8_t DEFAULT_WINDOW_INDEX = 0;
+
+uint8_t slots[DRUM_N] = {0, 1, 1, 1, 1};
+uint8_t windowIndex   = DEFAULT_WINDOW_INDEX;   // overridden by NVS
+
+bool modeCwOnly = false;
+
+// ---------------- Encoder multi-turn tracking ----------------
+long     multiCounts         = 0;      // total motor counts since startup
+uint16_t prevRaw             = 0;
+bool     encoderInitialized  = false;
+
+// Tolerances
+static const long JAM_TOL_COUNTS          = 300;   // step verification (~26° motor)
+static const long MANUAL_MOVE_WARN_COUNTS = 2000;  // manual move detection threshold
+
+// For manual-rotation detection
+long baseCountsForIndex   = 0;   // encoder count when windowIndex was last “trusted”
+bool baseCountsValid      = false;
+unsigned long lastEncPollMs = 0;
+
+// ---------------- Persistence ----------------
+Preferences prefs;
+static const uint32_t STATE_MAGIC = 0x1A3F5B0C;   // arbitrary constant
+
+// ---------------- Small helpers ----------------
+static inline uint8_t modN(int v) {
+  int m = v % (int)DRUM_N;
+  return (m < 0) ? (m + DRUM_N) : m;
 }
 
-/* --------------------------- I2C helpers ------------------------ */
-uint16_t i2cRead16(uint8_t dev, uint8_t regHigh) {
+// ---------------- AS5600 helpers ----------------
+static uint16_t i2cRead16(uint8_t dev, uint8_t regHigh) {
   Wire.beginTransmission(dev);
   Wire.write(regHigh);
   if (Wire.endTransmission(false) != 0) return 0;
@@ -102,226 +85,548 @@ uint16_t i2cRead16(uint8_t dev, uint8_t regHigh) {
   return ((uint16_t)hi << 8) | lo;
 }
 
-uint8_t as5600Status() {
-  Wire.beginTransmission(AS5600_ADDR);
-  Wire.write(REG_STATUS);
-  if (Wire.endTransmission(false) != 0) { say("I2C STATUS error"); return 0; }
-  if (Wire.requestFrom((int)AS5600_ADDR, 1) != 1) { say("I2C STATUS read fail"); return 0; }
-  uint8_t st = Wire.read();
-  bool md = st & (1 << 5);
-  bool ml = st & (1 << 4);
-  bool mh = st & (1 << 3);
-  Serial.print("STATUS=0x"); Serial.print(st, HEX);
-  Serial.print(" [MD="); Serial.print(md);
-  Serial.print(" ML="); Serial.print(ml);
-  Serial.print(" MH="); Serial.print(mh);
-  Serial.println("]");
-  return st;
+static uint16_t as5600AngleRaw() {
+  uint16_t raw = i2cRead16(AS5600_ADDR, REG_RAW_ANGLE_H);
+  return raw & 0x0FFF;
 }
 
-uint16_t as5600AngleRaw() {
-  uint8_t regH = USE_FILTERED_ANGLE ? REG_ANGLE_H : REG_RAW_ANGLE_H;
-  return i2cRead16(AS5600_ADDR, regH) & 0x0FFF;
-}
-
-float encoderAngleDeg() {
+// Single-turn MOTOR angle for debug [0..360)
+static float encoderMotorAngleDegSingleTurn() {
   uint16_t raw = as5600AngleRaw();
-  int32_t diff = (int32_t)raw - (int32_t)conf.encZeroRaw;
-  if (diff < 0) diff += conf.ticksPerRev;
-  float deg = (diff * 360.0f) / (float)conf.ticksPerRev;
-  if (deg > 359.8f) deg = 0.0f;
+  int32_t diff = (int32_t)raw - (int32_t)encZeroRaw;
+  if (diff < 0) diff += TICKS_PER_REV;
+  if (diff >= TICKS_PER_REV) diff -= TICKS_PER_REV;
+  float deg = (diff * 360.0f) / (float)TICKS_PER_REV;
+  if (deg >= 360.0f) deg -= 360.0f;
   return deg;
 }
 
-void encoderZeroHere() {
-  conf.encZeroRaw = as5600AngleRaw();
-  nvsSave(); // persist immediately
-  Serial.print("Zero saved. raw="); Serial.print(conf.encZeroRaw);
-  Serial.print(" (0x"); Serial.print(conf.encZeroRaw, HEX); Serial.println(")");
+// Multi-turn update (call routinely + while motor is moving)
+static long updateEncoderMulti() {
+  uint16_t raw = as5600AngleRaw();
+
+  if (!encoderInitialized) {
+    prevRaw = raw;
+    encoderInitialized = true;
+    return 0;
+  }
+
+  int32_t delta = (int32_t)raw - (int32_t)prevRaw;
+
+  // Wrap correction: half-turn = 2048 counts
+  if (delta >  2048) delta -= 4096;
+  if (delta < -2048) delta += 4096;
+
+  multiCounts += delta;
+  prevRaw = raw;
+  return delta;
 }
 
-/* --------------------------- I2C Scanner ------------------------ */
-void scanI2C() {
-  say("Scanning I2C bus...");
-  int found = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("  Found device at 0x");
-      if (addr < 16) Serial.print("0");
-      Serial.println(addr, HEX);
-      found++;
+// ---------------- Microstepping ----------------
+static void applyMicrostepPins() {
+  pinMode(MS1_PIN, OUTPUT);
+  pinMode(MS2_PIN, OUTPUT);
+
+  bool ms1 = LOW;
+  bool ms2 = LOW;
+
+  switch (microstep) {
+    case 1:   ms1 = LOW;  ms2 = LOW;  break;
+    case 2:   ms1 = HIGH; ms2 = LOW;  break;
+    case 4:   ms1 = LOW;  ms2 = HIGH; break;
+    case 8:   ms1 = HIGH; ms2 = HIGH; break;
+    case 16:  ms1 = HIGH; ms2 = HIGH; break;
+    default:  ms1 = LOW;  ms2 = LOW;  break;
+  }
+
+  digitalWrite(MS1_PIN, ms1);
+  digitalWrite(MS2_PIN, ms2);
+}
+
+static bool setMicrostep(int m) {
+  if (m != 1 && m != 2 && m != 4 && m != 8 && m != 16) {
+    Serial.println(F("[cfg] invalid microstep (use 1,2,4,8,16)"));
+    return false;
+  }
+  microstep   = m;
+  stepsPerRev = BASE_STEPS_PER_REV * microstep;
+  applyMicrostepPins();
+  Serial.print(F("[cfg] microstep="));
+  Serial.print(microstep);
+  Serial.print(F(" stepsPerRev="));
+  Serial.println(stepsPerRev);
+  return true;
+}
+
+// ---------------- Persistence (windowIndex only) ----------------
+static void saveState() {
+  prefs.putUInt("magic", STATE_MAGIC);
+  prefs.putUChar("slot", windowIndex);
+  Serial.print(F("[state] saved windowIndex="));
+  Serial.println(windowIndex);
+}
+
+static void loadState() {
+  prefs.begin("wheel", false);
+  uint32_t magic = prefs.getUInt("magic", 0);
+
+  if (magic == STATE_MAGIC) {
+    windowIndex = prefs.getUChar("slot", DEFAULT_WINDOW_INDEX);
+    Serial.print(F("[state] loaded windowIndex="));
+    Serial.println(windowIndex);
+  } else {
+    Serial.println(F("[state] no valid state, seeding defaults"));
+    windowIndex = DEFAULT_WINDOW_INDEX;
+    prefs.putUInt("magic", STATE_MAGIC);
+    prefs.putUChar("slot", windowIndex);
+    Serial.print(F("[state] default windowIndex="));
+    Serial.println(windowIndex);
+  }
+
+  // After load, treat current encoder position as base for that index
+  baseCountsForIndex = multiCounts;
+  baseCountsValid    = true;
+}
+
+// Wipe stored state and reset to default idx=0 (open slice)
+static void burnState() {
+  prefs.begin("wheel", false);
+  Serial.println(F("[state] WARNING: clearing stored state and resetting to defaults..."));
+
+  prefs.clear();
+
+  windowIndex = DEFAULT_WINDOW_INDEX;
+  prefs.putUInt("magic", STATE_MAGIC);
+  prefs.putUChar("slot", windowIndex);
+
+  baseCountsForIndex = multiCounts;   // whatever angle we’re at now = “slot 0 open”
+  baseCountsValid    = true;
+
+  Serial.print(F("[state] EEPROM reset to default windowIndex="));
+  Serial.println(windowIndex);
+}
+
+// ---------------- Stepper motion (MOTOR space) ----------------
+
+static void moveSteps(long steps, bool cw) {
+  if (steps <= 0) return;
+
+  // set direction once
+  digitalWrite(DIR_PIN, cw == dirCwHigh ? HIGH : LOW);
+
+  // convert wheel deg/s to motor steps/s
+  float motorDegPerSec = degPerSecWheel * GEAR_RATIO;
+  float sps = (motorDegPerSec * stepsPerRev) / 360.0f;
+  if (sps < 100.0f) sps = 100.0f;
+  float period_us = 1e6f / sps;
+  uint32_t usHalf = (uint32_t)max((float)MIN_US_HALF, period_us / 2.0f);
+
+  for (long i = 0; i < steps; ++i) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(usHalf);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(usHalf);
+
+    // Update encoder multi-turn tracking per step
+    updateEncoderMulti();
+  }
+}
+
+// Low-level motor movement in MOTOR degrees, with encoder verification
+static bool moveMotorByDegreesVerified(float deltaMotorDeg) {
+  // Make sure encoder tracking is fresh
+  updateEncoderMulti();
+
+  // ---- Detect manual rotation since last trusted index ----
+  if (baseCountsValid && digitalRead(EN_PIN) == HIGH) {
+    long diffCounts = multiCounts - baseCountsForIndex;
+    if (labs(diffCounts) > MANUAL_MOVE_WARN_COUNTS) {
+      float motorIdleDeg = diffCounts * 360.0f / (float)TICKS_PER_REV;
+      float wheelIdleDeg = motorIdleDeg / GEAR_RATIO;
+      float slotsIdle    = wheelIdleDeg / PITCH_DEG;
+
+      Serial.print(F("[WARN] detected manual rotation since last index align: ~"));
+      Serial.print(wheelIdleDeg, 1);
+      Serial.print(F(" wheel deg (~"));
+      Serial.print(slotsIdle, 2);
+      Serial.println(F(" slots). Logical index may be wrong."));
+      // We do NOT touch windowIndex here.
     }
   }
-  if (!found) say("No I2C devices found!");
-  else say("Scan complete.");
+
+  // ---- Normal commanded move verification ----
+  if (!isfinite(deltaMotorDeg) || fabsf(deltaMotorDeg) < 0.1f) return true;
+
+  bool cw      = (deltaMotorDeg > 0.0f);
+  float absDeg = fabsf(deltaMotorDeg);
+
+  long steps = lroundf((absDeg * stepsPerRev) / 360.0f);
+  if (steps <= 0) return true;
+
+  // Expected encoder counts for this move
+  long expectedCounts = lroundf(deltaMotorDeg * (float)TICKS_PER_REV / 360.0f);
+
+  Serial.print(F("[move] motor "));
+  Serial.print(deltaMotorDeg, 2);
+  Serial.print(F(" deg -> "));
+  Serial.print(steps);
+  Serial.print(F(" steps, expectedCounts="));
+  Serial.println(expectedCounts);
+
+  long startCounts = multiCounts;
+
+  // Enable driver only while moving
+  digitalWrite(EN_PIN, LOW);
+  delay(2);
+
+  moveSteps(steps, cw);
+
+  digitalWrite(EN_PIN, HIGH); // disable after move
+
+  long actualCounts = multiCounts - startCounts;
+  long errorCounts  = actualCounts - expectedCounts;
+
+  Serial.print(F("[enc] actualCounts="));
+  Serial.print(actualCounts);
+  Serial.print(F(" error="));
+  Serial.println(errorCounts);
+
+  if (labs(errorCounts) > JAM_TOL_COUNTS) {
+    Serial.println(F("[FAULT] encoder mismatch: motor did NOT move as commanded"));
+    return false;
+  }
+
+  Serial.println(F("[OK] encoder verified move"));
+  return true;
 }
 
-/* --------------------------- Motor helpers ---------------------- */
-void motorInit() {
-  pinMode(PIN_DIR, OUTPUT);
-  pinMode(PIN_STEP, OUTPUT);
-  if (PIN_EN >= 0) {
-    pinMode(PIN_EN, OUTPUT);
-    digitalWrite(PIN_EN, LOW); // TMC2208 enable = LOW
+// High-level movement in WHEEL degrees
+static bool moveWheelByDegreesVerified(float deltaWheelDeg) {
+  float deltaMotorDeg = deltaWheelDeg * GEAR_RATIO;
+  return moveMotorByDegreesVerified(deltaMotorDeg);
+}
+
+// ---------------- Index / geometry ----------------
+static void advanceIndexCW(uint8_t steps) {
+  windowIndex = modN((int)windowIndex + (int)steps);
+}
+
+static void advanceIndexCCW(uint8_t steps) {
+  windowIndex = modN((int)windowIndex - (int)steps);
+}
+
+// Compute how many slot steps and direction to go from windowIndex to target
+static void computeMove(uint8_t target, uint8_t &stepsOut, bool &cwOut) {
+  int cwSteps  = modN((int)target - (int)windowIndex);  // + direction on WHEEL
+  int ccwSteps = modN((int)windowIndex - (int)target);  // - direction on WHEEL
+
+  if (modeCwOnly) {
+    stepsOut = (uint8_t)cwSteps;
+    cwOut    = true;
+  } else {
+    if (cwSteps <= ccwSteps) {
+      stepsOut = (uint8_t)cwSteps;
+      cwOut    = true;
+    } else {
+      stepsOut = (uint8_t)ccwSteps;
+      cwOut    = false;
+    }
   }
 }
 
-// Simple blocking step generator (fine for bring-up)
-void stepBlocking(long steps, bool cw) {
-  // Map requested CW/CCW to DIR level per config
-  int dirLevel = conf.dirCwHigh ? (cw ? HIGH : LOW) : (cw ? LOW : HIGH);
-  digitalWrite(PIN_DIR, dirLevel);
+static bool rotateToSlot(uint8_t target) {
+  uint8_t steps;
+  bool cw;
+  computeMove(target, steps, cw);
+  if (steps == 0) return true;
 
-  float sps = max(100.0f, (conf.degPerSec * conf.stepsPerRev) / 360.0f);
-  uint32_t usHalf = (uint32_t)max(100.0f, 1e6f / (2.0f * sps));
+  float deltaWheelDeg = (float)steps * PITCH_DEG * (cw ? +1.0f : -1.0f);
 
-  for (long i = 0; i < steps; i++) {
-    digitalWrite(PIN_STEP, HIGH);
-    delayMicroseconds(usHalf);
-    digitalWrite(PIN_STEP, LOW);
-    delayMicroseconds(usHalf);
+  bool ok = moveWheelByDegreesVerified(deltaWheelDeg);
+  if (!ok) {
+    Serial.println(F("[geo] move FAILED, not updating index/state"));
+    return false;
   }
+
+  if (cw) advanceIndexCW(steps);
+  else    advanceIndexCCW(steps);
+
+  Serial.print(F("[geo] windowIndex -> "));
+  Serial.println(windowIndex);
+
+  // After a successful logical index change, re-anchor encoder
+  baseCountsForIndex = multiCounts;
+  baseCountsValid    = true;
+
+  saveState();
+  return true;
 }
 
-/* --------------------------- Open-loop move ---------------------- */
-void moveByDegrees(float targetDelta) {
-  if (!isfinite(targetDelta) || fabs(targetDelta) < 0.1f) {
-    say("Ignored tiny/invalid move");
+// ---------------- Inventory ----------------
+static void printSlots() {
+  Serial.print(F("[slots] idx="));
+  Serial.print(windowIndex);
+  Serial.print(F(" state=["));
+  for (uint8_t i = 0; i < DRUM_N; ++i) {
+    Serial.print((int)slots[i]);
+    if (i + 1 < DRUM_N) Serial.print(',');
+  }
+  Serial.println(']');
+}
+
+static int8_t findNearestFilled() {
+  int bestSteps = 999;
+  int bestIdx   = -1;
+
+  for (uint8_t i = 0; i < DRUM_N; ++i) {
+    if (i == 0) continue;          // never use slot 0
+    if (slots[i] != 1) continue;   // only filled slots
+
+    int cwSteps  = modN((int)i - (int)windowIndex);
+    int ccwSteps = modN((int)windowIndex - (int)i);
+    int steps = modeCwOnly
+      ? cwSteps
+      : (cwSteps <= ccwSteps ? cwSteps : ccwSteps);
+
+    if (steps > 0 && steps < bestSteps) {
+      bestSteps = steps;
+      bestIdx   = i;
+    }
+  }
+  return (int8_t)bestIdx;
+}
+
+// nearest empty CCW (including slot 0)
+static int8_t findNearestEmptyCCW() {
+  for (int step = 1; step < DRUM_N; ++step) {
+    uint8_t idx = modN((int)windowIndex - step);
+    if (slots[idx] == 0) {
+      return (int8_t)idx;
+    }
+  }
+  return -1;
+}
+
+static bool performDispense() {
+  int8_t idx = findNearestFilled();
+  if (idx < 0) {
+    Serial.println(F("[disp] no filled slots available"));
+    return false;
+  }
+
+  Serial.print(F("[disp] target slot "));
+  Serial.println(idx);
+
+  if (!rotateToSlot((uint8_t)idx)) {
+    Serial.println(F("[disp] ABORT: rotation failed"));
+    return false;
+  }
+
+  // Dispensed from windowIndex
+  slots[windowIndex] = 0;
+  printSlots();
+  return true;
+}
+
+static bool performReturn() {
+  Serial.println(F("[ret] docking hold..."));
+  delay(2000);
+
+  if (windowIndex == 0) {
+    Serial.println(F("[ret] ERROR: cannot return into slot 0 (non-storage)."));
+    return false;
+  }
+
+  // Deposit into current slot
+  slots[windowIndex] = 1;
+
+  // Find new open slot CCW
+  int8_t idx = findNearestEmptyCCW();
+  if (idx < 0) {
+    Serial.println(F("[ret] no empty slots available after return"));
+    printSlots();
+    return false;
+  }
+
+  Serial.print(F("[ret] new open slot (CCW) = "));
+  Serial.println(idx);
+
+  int steps = modN((int)windowIndex - (int)idx);
+  if (steps <= 0) {
+    printSlots();
+    saveState();
+    return true;
+  }
+
+  float deltaWheelDeg = - (float)steps * PITCH_DEG;
+  bool ok = moveWheelByDegreesVerified(deltaWheelDeg);
+  if (!ok) {
+    Serial.println(F("[ret] ABORT: rotation failed, not updating index"));
+    return false;
+  }
+
+  advanceIndexCCW((uint8_t)steps);
+
+  // Re-anchor encoder after successful move
+  baseCountsForIndex = multiCounts;
+  baseCountsValid    = true;
+
+  printSlots();
+  saveState();
+  return true;
+}
+
+// ---------------- Serial commands ----------------
+static void printHelp() {
+  Serial.println(F("Commands:"));
+  Serial.println(F("  help          - show this help"));
+  Serial.println(F("  angle         - show MOTOR single-turn angle [0..360)"));
+  Serial.println(F("  zero          - set current MOTOR position as 0 deg"));
+  Serial.println(F("  deg <angle>   - move WHEEL RELATIVE by <angle> deg (+CW, -CCW)"));
+  Serial.println(F("  spd <dps>     - set WHEEL speed in deg/s"));
+  Serial.println(F("  ms <1|2|4|8|16> - set microstepping"));
+  Serial.println(F("  slots         - show slot state & window index"));
+  Serial.println(F("  disp          - perform dispense to nearest filled slot"));
+  Serial.println(F("  ret           - perform return to nearest empty slot"));
+  Serial.println(F("  mode bi       - bidirectional (shortest path)"));
+  Serial.println(F("  mode cw       - CW-only rotation"));
+  Serial.println(F("  burn          - CLEAR saved state and reset to default (idx=0)"));
+}
+
+static void handleCommand(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+  String low = cmd;
+  low.toLowerCase();
+
+  if (low == "help") { printHelp(); return; }
+
+  if (low == "angle") {
+    float a = encoderMotorAngleDegSingleTurn();
+    Serial.print(F("[enc] MOTOR angle(single-turn) = "));
+    Serial.print(a, 2);
+    Serial.println(F(" deg"));
     return;
   }
-  float start = encoderAngleDeg();
-  float goal  = fmodf(start + targetDelta + 360.0f, 360.0f);
 
-  Serial.print("Start="); Serial.print(start, 2);
-  Serial.print("°, Goal="); Serial.print(goal, 2);
-  Serial.print("°, Delta="); Serial.println(targetDelta, 2);
-
-  long estSteps = lroundf((targetDelta * conf.stepsPerRev) / 360.0f);
-  bool cw = (targetDelta >= 0);
-  stepBlocking(labs(estSteps), cw);
-}
-
-/* --------------------------- Motor test ------------------------- */
-void motorTest() {
-  say("Motor test: 1 rev CW, 1 rev CCW");
-  stepBlocking(conf.stepsPerRev, true);
-  delay(500);
-  stepBlocking(conf.stepsPerRev, false);
-  say("Motor test done.");
-}
-
-/* ----------------------------- Commands ------------------------- */
-String readLine() {
-  static String buf;
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') { String out = buf; buf = ""; out.trim(); return out; }
-    buf += c;
+  if (low == "zero") {
+    encZeroRaw = as5600AngleRaw();
+    Serial.print(F("[enc] zero set at raw="));
+    Serial.println(encZeroRaw);
+    return;
   }
-  return "";
+
+  if (low.startsWith("deg ")) {
+    float wheelDeg = cmd.substring(4).toFloat();
+    moveWheelByDegreesVerified(wheelDeg);
+    return;
+  }
+
+  if (low.startsWith("spd ")) {
+    float s = cmd.substring(4).toFloat();
+    if (s > 0.1f) {
+      degPerSecWheel = s;
+      Serial.print(F("[cfg] wheel speed="));
+      Serial.println(degPerSecWheel, 1);
+    } else {
+      Serial.println(F("[cfg] speed must be >0"));
+    }
+    return;
+  }
+
+  if (low.startsWith("ms ")) {
+    int m = cmd.substring(3).toInt();
+    setMicrostep(m);
+    return;
+  }
+
+  if (low == "slots") {
+    printSlots();
+    return;
+  }
+
+  if (low == "disp") {
+    performDispense();
+    return;
+  }
+
+  if (low == "ret") {
+    performReturn();
+    return;
+  }
+
+  if (low == "mode bi") {
+    modeCwOnly = false;
+    Serial.println(F("[mode] bidirectional (shortest path)"));
+    return;
+  }
+
+  if (low == "mode cw") {
+    modeCwOnly = true;
+    Serial.println(F("[mode] CW-only"));
+    return;
+  }
+
+  if (low == "burn") {
+    burnState();
+    return;
+  }
+
+  Serial.println(F("[err] unknown command; type 'help'"));
 }
 
-void help() {
-  Serial.println(
-    "Commands:\n"
-    "  help              - show this text\n"
-    "  scan              - scan I2C bus\n"
-    "  stat              - encoder status/angle + persisted config\n"
-    "  zero              - set current pose as zero (SAVES)\n"
-    "  setslot <i>       - set current slot index 0..4 (SAVES)\n"
-    "  setspr <n>        - set stepsPerRev (SAVES)\n"
-    "  setdps <f>        - set degPerSec (SAVES)\n"
-    "  setdir <0|1>      - set DIR=HIGH is CW (SAVES)\n"
-    "  test <deg>        - move motor by <deg>\n"
-    "  motor_test        - 1 rev CW + 1 rev CCW test\n"
-  );
-}
-
-void stat() {
-  as5600Status();
-  uint16_t raw = as5600AngleRaw();
-  float deg = encoderAngleDeg();
-  Serial.print("raw="); Serial.print(raw);
-  Serial.print(" deg="); Serial.print(deg, 2);
-  Serial.print(" | zeroRaw="); Serial.print(conf.encZeroRaw);
-  Serial.print(" slot="); Serial.print(conf.currentSlotIndex);
-  Serial.print(" stepsPerRev="); Serial.print(conf.stepsPerRev);
-  Serial.print(" ticksPerRev="); Serial.print(conf.ticksPerRev);
-  Serial.print(" dirCwHigh="); Serial.print(conf.dirCwHigh);
-  Serial.print(" degPerSec="); Serial.println(conf.degPerSec, 1);
-}
-
-void handleCmd(String line) {
-  if (!line.length()) return;
-  line.trim();
-  String cmd = line, arg = "";
-  int sp = line.indexOf(' ');
-  if (sp >= 0) { cmd = line.substring(0, sp); arg = line.substring(sp + 1); }
-  cmd.toLowerCase(); arg.trim();
-
-  if      (cmd == "help") help();
-  else if (cmd == "scan") scanI2C();
-  else if (cmd == "stat") stat();
-  else if (cmd == "zero") encoderZeroHere();
-  else if (cmd == "setslot") {
-    int v = arg.toInt();
-    if (v >= 0 && v <= 4) { conf.currentSlotIndex = (int8_t)v; nvsSave(); say("Slot index saved."); }
-    else say("Bad slot index (0..4)");
-  }
-  else if (cmd == "setspr") {
-    long v = arg.toInt();
-    if (v >= 200 && v <= 25600) { conf.stepsPerRev = (uint16_t)v; nvsSave(); say("stepsPerRev saved."); }
-    else say("Bad stepsPerRev (200..25600)");
-  }
-  else if (cmd == "setdps") {
-    float v = arg.toFloat();
-    if (v > 0 && v <= 720.0f) { conf.degPerSec = v; nvsSave(); say("degPerSec saved."); }
-    else say("Bad degPerSec (0..720]");
-  }
-  else if (cmd == "setdir") {
-    int v = arg.toInt();
-    if (v == 0 || v == 1) { conf.dirCwHigh = (uint8_t)v; nvsSave(); say("dirCwHigh saved."); }
-    else say("Use 0 or 1");
-  }
-  else if (cmd == "test") { float d = arg.toFloat(); moveByDegrees(d); }
-  else if (cmd == "motor_test") motorTest();
-  else say("Unknown command: " + cmd);
-}
-
-/* ------------------------------ Setup --------------------------- */
+// ---------------- Arduino hooks ----------------
 void setup() {
   Serial.begin(115200);
-  delay(300);
+  delay(200);
 
-  // I2C on ESP32 (3.3 V)
-  Wire.begin(21, 22);
+  pinMode(EN_PIN, OUTPUT);
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(DIR_PIN, LOW);
+  digitalWrite(EN_PIN, HIGH); // disabled by default (active-low)
 
-  // Load persisted config or defaults
-  if (!nvsLoad()) {
-    say("NVS empty -> loading defaults");
-    loadDefaults();
-    nvsSave();
-  } else {
-    say("NVS config restored");
-  }
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
 
-  motorInit();
+  applyMicrostepPins();
+  encZeroRaw = as5600AngleRaw();
+  prevRaw    = as5600AngleRaw();
+  encoderInitialized = true;
+  multiCounts = 0;
 
-  Serial.print("ZeroRaw="); Serial.print(conf.encZeroRaw);
-  Serial.print(" Slot="); Serial.print(conf.currentSlotIndex);
-  Serial.print(" Steps/Rev="); Serial.print(conf.stepsPerRev);
-  Serial.print(" Ticks/Rev="); Serial.print(conf.ticksPerRev);
-  Serial.print(" DirCW="); Serial.print(conf.dirCwHigh);
-  Serial.print(" dps="); Serial.println(conf.degPerSec, 1);
+  // Initial base anchor is “whatever angle we booted at”
+  baseCountsForIndex = multiCounts;
+  baseCountsValid    = true;
 
-  say("ESP32 + TMC2208 + AS5600 ready (NVS persistent)");
-  help();
+  loadState();
+
+  Serial.println(F("ESP32 drum test: gearbox + encoder-verified moves + manual-move warning"));
+  Serial.print(F("BASE_STEPS_PER_REV="));
+  Serial.println(BASE_STEPS_PER_REV);
+  Serial.print(F("microstep="));
+  Serial.println(microstep);
+  Serial.print(F("stepsPerRev="));
+  Serial.println(stepsPerRev);
+  Serial.print(F("GEAR_RATIO="));
+  Serial.println(GEAR_RATIO, 2);
+  Serial.print(F("Initial encZeroRaw="));
+  Serial.println(encZeroRaw);
+  printSlots();
+  printHelp();
 }
 
-/* ------------------------------ Loop ---------------------------- */
 void loop() {
-  String l = readLine();
-  if (l.length()) handleCmd(l);
+  // Periodic encoder polling to track manual motion smoothly
+  unsigned long now = millis();
+  if (now - lastEncPollMs >= 20) {   // 50 Hz
+    lastEncPollMs = now;
+    updateEncoderMulti();
+  }
+
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    handleCommand(cmd);
+  }
 }
