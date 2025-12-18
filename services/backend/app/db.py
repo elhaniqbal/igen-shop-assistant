@@ -1,44 +1,26 @@
 import os
-import sqlite3
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-DB_PATH = os.getenv("DATABASE_URL", "sqlite:///./data/local_cache.db")
-engine = create_engine(DB_PATH, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/igen.db")
 
-def init():
-    """Ensure the events table exists and matches expected schema."""
-    os.makedirs("./data", exist_ok=True)
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-            CREATE TABLE IF NOT EXISTS events (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              topic TEXT NOT NULL,
-              payload TEXT NOT NULL,
-              ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-        )
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    connect_args=connect_args,
+)
 
-        # optional sanity check: if missing columns (old schema), drop+recreate
-        cols = [
-            r[1]
-            for r in conn.exec_driver_sql("PRAGMA table_info(events)").fetchall()
-        ]
-        if set(cols) != {"id", "topic", "payload", "ts"}:
-            print("[DB] ⚠️ Schema mismatch, recreating events table...")
-            conn.execute(text("DROP TABLE IF EXISTS events"))
-            conn.execute(
-                text("""
-                CREATE TABLE events (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  topic TEXT NOT NULL,
-                  payload TEXT NOT NULL,
-                  ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
-            )
-    print("[DB] ✅ SQLite initialized")
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+class Base(DeclarativeBase):
+    pass
+
+def init_db():
+    if DATABASE_URL.startswith("sqlite:///./"):
+        os.makedirs("./data", exist_ok=True)
+
+    from . import models  # noqa: F401
+    Base.metadata.create_all(bind=engine)

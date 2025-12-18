@@ -220,7 +220,6 @@ build/
 *.log
 coverage/
 
-
 # C++ / PlatformIO / Arduino
 cmake-build*/
 *.o
