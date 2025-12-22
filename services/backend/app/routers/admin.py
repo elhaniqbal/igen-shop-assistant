@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from .deps import get_db, get_mqtt
 from .. import schemas
+from .. import models
 from ..usecases import admin_crud as uc
 from ..mqtt import MqttBus
 import threading
@@ -41,7 +42,7 @@ def test_motor(body: schemas.AdminMotorTestReq):
         "error_reason": None,
     })
 
-    mqtt = get_mqtt()
+    mqtt = MqttBus(Depends(get_mqtt))
     if not mqtt:
         _set_motor_test_status(request_id, {"stage": "failed", "error_code": "MQTT_NOT_READY", "error_reason": "mqtt bus not ready"})
         raise HTTPException(status_code=503, detail="MQTT not ready")
@@ -60,14 +61,6 @@ def test_motor_status(request_id: str):
     if not st:
         raise HTTPException(status_code=404, detail="unknown request_id")
     return st
-
-
-
-
-
-
-
-
 
 
 
@@ -188,3 +181,31 @@ def list_events(
 @router.get("/events/{event_id}", response_model=schemas.EventOut)
 def get_event(event_id: int, db: Session = Depends(get_db)):
     return uc.get_event(db, event_id)
+
+@router.put("/users/{user_id}/card")
+def assign_user_card(user_id: str, req: schemas.AssignCardReq, db: Session = Depends(get_db)):
+    u = db.get(models.User, user_id)
+    if not u:
+        raise HTTPException(404, "user not found")
+    # enforce uniqueness
+    existing = db.query(models.User).filter(models.User.card_id == req.card_id).first()
+    if existing and existing.user_id != user_id:
+        raise HTTPException(409, "card already assigned to another user")
+
+    u.card_id = req.card_id
+    db.commit()
+    return {"ok": True, "user_id": user_id, "card_id": req.card_id}
+
+@router.put("/tools/items/{tool_item_id}/tag")
+def assign_tool_tag(tool_item_id: str, req:schemas.AssignToolTagReq, db: Session = Depends(get_db)):
+    ti = db.get(models.ToolItem, tool_item_id)
+    if not ti:
+        raise HTTPException(404, "tool item not found")
+
+    existing = db.query(models.ToolItem).filter(models.ToolItem.tool_tag_id == req.tool_tag_id).first()
+    if existing and existing.tool_item_id != tool_item_id:
+        raise HTTPException(409, "tag already assigned to another tool item")
+
+    ti.tool_tag_id = req.tool_tag_id
+    db.commit()
+    return {"ok": True, "tool_item_id": tool_item_id, "tool_tag_id": req.tool_tag_id}

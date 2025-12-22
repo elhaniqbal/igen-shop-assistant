@@ -8,7 +8,8 @@ dependencies = [
   "paho-mqtt>=2.1",
   "psycopg2-binary",
   "sqlalchemy>=2.0",
-  "pyserial>=3.5"
+  "pyserial>=3.5",
+  "mfrc522"
 ]
 
 [tool.uvicorn]

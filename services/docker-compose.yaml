@@ -8,7 +8,6 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # - VITE_API_URL=${VITE_MQTT_URL}
       - VITE_MQTT_URL=${VITE_MQTT_URL}
       - NODE_ENV=${NODE_ENV}
     depends_on:
@@ -28,7 +27,7 @@ services:
       - "8000"
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - MQTT_BROKER=${MQTT_BROKER} #if inside docker mqtt, localhost otherwise
+      - MQTT_BROKER=${MQTT_BROKER} # if inside docker mqtt, localhost otherwise
       - MQTT_PORT=1883
       - PYTHONUNBUFFERED=1
     volumes:
@@ -42,27 +41,12 @@ services:
         condition: service_started
       mqttx:
         condition: service_started
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
-    #   interval: 5s
-    #   timeout: 3s
-    #   retries: 5
+      bridge:
+        condition: service_started
+      rfid:
+        condition: service_started
     networks:
       - internal
-
-  # # ---- SQLite Web GUI ----
-  # sqlite-web:
-  #   image: coleifer/sqlite-web
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8082:8080"
-  #   environment:
-  #     - SQLITE_DATABASE=${SQLITE_PATH}
-  #   volumes:
-  #     - ./data:/data           # ✅ Same volume as backend (shared DB)
-  #   networks:
-  #     - internal
-  #     - public
 
   sqlite-web2:
     build:
@@ -90,11 +74,6 @@ services:
       - ./mosquitto/config:/mosquitto/config
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
-    # healthcheck:
-    #   test: ["CMD", "mosquitto_sub", "-h", "localhost", "-t", "$SYS/broker/version", "-C", "1"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 3
     networks:
       - internal
 
@@ -111,6 +90,62 @@ services:
       - public
     depends_on:
       - mqtt
+
+  # ---- Bridge Sidecar (MQTT <-> Serial) ----
+  bridge:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.bridge
+    restart: unless-stopped
+    environment:
+      - MQTT_HOST=mqtt
+      - MQTT_PORT=1883
+      - BRIDGE_MODE=SIM          # switch to SERIAL on Raspberry Pi
+      - SERIAL_PORT=/dev/ttyUSB0 # used only in SERIAL mode
+      - SERIAL_BAUD=115200
+      - ACK_TIMEOUT_MS=500
+      - DONE_TIMEOUT_MS=30000
+      - SIM_FAIL_RATE=0.08
+      - SIM_MIN_TIME_S=0.4
+      - SIM_MAX_TIME_S=1.5
+      - SIM_ACK_DELAY_S=0.05
+    depends_on:
+      mqtt:
+        condition: service_started
+    networks:
+      - internal
+    # For Raspberry Pi SERIAL mode, uncomment:
+    # devices:
+    #   - "/dev/ttyUSB0:/dev/ttyUSB0"
+
+  # ---- RFID Sidecar (MFRC522 -> MQTT) ----
+  # rfid:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile.rfid
+  #   restart: unless-stopped
+  #   environment:
+  #     - MQTT_HOST=mqtt
+  #     - MQTT_PORT=1883
+  #     - RFID_READER_ID=kiosk_1_reader_1
+  #     - RFID_DEFAULT_MODE=card
+  #     - RFID_UID_ONLY=1
+  #     - RFID_POLL_DELAY_S=0.05
+  #   depends_on:
+  #     mqtt:
+  #       condition: service_started
+  #   networks:
+  #     - internal
+    # IMPORTANT:
+    # - On Windows dev, this container may fail if it requires Raspberry Pi GPIO/SPI libs.
+    #   If so, either comment out this service locally or add a SIM mode to rfid script.
+    #
+    # For Raspberry Pi with real MFRC522 over SPI/GPIO, uncomment:
+    # privileged: true
+    # devices:
+    #   - "/dev/spidev0.0:/dev/spidev0.0"
+    #   - "/dev/spidev0.1:/dev/spidev0.1"
+    #   - "/dev/gpiomem:/dev/gpiomem"
 
 networks:
   internal:

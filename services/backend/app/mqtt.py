@@ -20,6 +20,7 @@ SUB_TOPICS = [
     "igen/evt/rfid/tool_scan",
     "igen/evt/system/fault",
     "igen/evt/system/status",
+    "igen/evt/admin_test/motor"
 ]
 
 class MqttBus:
@@ -49,7 +50,7 @@ class MqttBus:
     def start(self):
         for i in range(10):
             try:
-                self._client.connect(MQTT_HOST, MQTT_PORT, 60)
+                self._client.connect(MQTT_HOST, MQTT_PORT)
                 self._client.loop_start()
                 print("[MQTT] loop started")
                 return
@@ -71,6 +72,9 @@ class MqttBus:
 
 @with_db
 def _handle_mqtt_message(db, topic: str, payload: dict):
+    if topic == "igen/evt/admin_test/motor":
+        dispatch_mqtt(db, topic, payload)
+        return
     # Always log raw MQTT events
     db.add(models.Event(event_type=f"mqtt:{topic}", payload_json=json.dumps(payload)))
     db.commit()
@@ -143,15 +147,17 @@ def handle_evt_return(db, payload: dict):
 
 @mqtt_topic("igen/evt/rfid/card_scan")
 def handle_evt_card_scan(db, payload: dict):
-    # Log-only for now. Implement auth flow later if you want MQTT-driven auth.
-    pass
+    # DB logging already happens in _handle_mqtt_message
+    reader_id = payload.get("reader_id", "unknown")
+    from .routers.user import _rfid_set  # local import avoids circular import on startup
+    _rfid_set(reader_id, "card", payload)
 
 
 @mqtt_topic("igen/evt/rfid/tool_scan")
 def handle_evt_tool_scan(db, payload: dict):
-    # Optional: if your reader publishes tool scans via MQTT, you can auto-confirm here.
-    # payload should include user_id OR you must infer current user session.
-    pass
+    reader_id = payload.get("reader_id", "unknown")
+    from .routers.user import _rfid_set
+    _rfid_set(reader_id, "tool", payload)
 
 
 @mqtt_topic("igen/evt/system/fault")
@@ -164,12 +170,3 @@ def handle_evt_fault(db, payload: dict):
 def handle_evt_status(db, payload: dict):
     # Heartbeat log; later you can store last-seen per node.
     pass
-
-
-@mqtt_topic("igen/evt/dispense")
-def handle_evt_dispense(db, payload: dict):
-    apply_dispense_event(db, payload)
-
-@mqtt_topic("igen/evt/return")
-def handle_evt_return(db, payload: dict):
-    apply_return_event(db, payload)

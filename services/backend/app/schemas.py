@@ -1,6 +1,40 @@
 from pydantic import BaseModel
 from typing import Optional, List, Literal
 from datetime import datetime
+class TOPIC_CMD_ADMIN_TEST(BaseModel):
+    request_id: str
+    motor_id: str
+    action: str
+
+
+# ---------- RFID -----------
+
+class RfidSetModeReq(BaseModel):
+    reader_id: str
+    mode: Literal["card", "tool"]
+
+class RfidWriteReq(BaseModel):
+    reader_id: str
+    text: str 
+
+class RfidWriteResp(BaseModel):
+    ok: bool = True
+    request_id: str
+
+class RfidWriteStatus(BaseModel):
+    request_id: str
+    stage: str  # queued|succeeded|failed
+    error: Optional[str] = None
+
+class AssignCardReq(BaseModel):
+    card_id: str
+
+class AssignToolTagReq(BaseModel):
+    tool_tag_id: str
+
+class CardAuthRequest(BaseModel):
+    card_id: str
+
 
 # ---------- USERS ----------
 class AdminUserCreate(BaseModel):

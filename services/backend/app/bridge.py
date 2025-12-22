@@ -42,7 +42,7 @@ from typing import Callable, Dict, Optional
 import paho.mqtt.client as mqtt
 
 try:
-    import serial  # pyserial installs the "serial" module
+    import serial  
 except Exception:
     serial = None
 
@@ -67,6 +67,8 @@ TOPIC_CMD_DISPENSE = "igen/cmd/dispense"
 TOPIC_CMD_RETURN = "igen/cmd/return"
 TOPIC_EVT_DISPENSE = "igen/evt/dispense"
 TOPIC_EVT_RETURN = "igen/evt/return"
+TOPIC_CMD_ADMIN_TEST = "igen/cmd/admin_test/motor"
+TOPIC_EVT_ADMIN_TEST = "igen/evt/admin_test/motor"
 
 
 # ---------- DATA ----------
@@ -110,14 +112,17 @@ class Bridge:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 
-        self.ser: Optional["serial.Serial"] = None
+        self.ser = None
         self._running = False
         self._rx_thread: Optional[threading.Thread] = None
 
         self._pending: Dict[str, Pending] = {}
         self._lock = threading.Lock()
 
-        self._evt_topic = lambda action: TOPIC_EVT_DISPENSE if action == "dispense" else TOPIC_EVT_RETURN
+        self._evt_topic = lambda action: (
+            TOPIC_EVT_ADMIN_TEST if action == "admin_test"
+            else (TOPIC_EVT_DISPENSE if action == "dispense" else TOPIC_EVT_RETURN)
+        )
         self._ts = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     # ---- lifecycle ----
@@ -275,7 +280,6 @@ class Bridge:
 
     def _serial_send(self, line: str):
         if not self.ser:
-            self._publish_stage("dispense", "unknown", "failed", "SERIAL_NOT_READY", "serial not open")
             print("[BRIDGE] Serial not open")
             return
         try:
@@ -371,6 +375,80 @@ def handle_return(self: Bridge, payload: dict):
         self._simulate("return", rid)
     else:
         self._serial_send(f"RETURN {rid} {slot_id}\n")
+
+@cmd(TOPIC_CMD_ADMIN_TEST)
+def handle_admin_test(self: Bridge, payload: dict):
+    rid = payload.get("request_id")
+    motor_id = payload.get("motor_id")
+    action = payload.get("action")  # "dispense" | "return"
+
+    # For now: endpoint is same, future: motor_id affects which node/slot mapping you hit
+    if not rid or motor_id is None or action not in ("dispense", "return"):
+        print("[BRIDGE] admin_test cmd missing request_id/motor_id/action")
+        return
+
+    # Publish accepted on the admin test event topic
+    self._publish(TOPIC_EVT_ADMIN_TEST, {
+        "request_id": rid,
+        "motor_id": int(motor_id),
+        "action": action,
+        "stage": "accepted",
+        "error_code": None,
+        "error_reason": None,
+        "ts": self._ts(),
+    })
+
+    # Start timers keyed by rid; label action="admin_test" so events go to admin test topic
+    self._start_pending("admin_test", rid)
+
+    if self.cfg.mode == "SIM":
+        # simulate uses self._handle_serial_line which publishes dispense/return topics.
+        # For admin tests we want admin_test topic events, so simulate manually:
+        def run():
+            time.sleep(SIM_ACK_DELAY_S)
+            self._publish(TOPIC_EVT_ADMIN_TEST, {
+                "request_id": rid,
+                "motor_id": int(motor_id),
+                "action": action,
+                "stage": "in_progress",
+                "error_code": None,
+                "error_reason": None,
+                "ts": self._ts(),
+            })
+
+            base = SIM_MIN_TIME_S + (abs(hash(rid)) % 1000) / 1000.0 * (SIM_MAX_TIME_S - SIM_MIN_TIME_S)
+            time.sleep(base)
+
+            ok = random.random() >= SIM_FAIL_RATE
+            if ok:
+                self._finish_pending(rid)
+                self._publish(TOPIC_EVT_ADMIN_TEST, {
+                    "request_id": rid,
+                    "motor_id": int(motor_id),
+                    "action": action,
+                    "stage": "succeeded",
+                    "error_code": None,
+                    "error_reason": None,
+                    "ts": self._ts(),
+                })
+            else:
+                self._finish_pending(rid)
+                err = random.choice(["JAM_GANTRY", "ENC_MISMATCH", "SENSOR_FAIL", "BUSY"])
+                self._publish(TOPIC_EVT_ADMIN_TEST, {
+                    "request_id": rid,
+                    "motor_id": int(motor_id),
+                    "action": action,
+                    "stage": "failed",
+                    "error_code": err,
+                    "error_reason": "hardware reported failure",
+                    "ts": self._ts(),
+                })
+
+        threading.Thread(target=run, daemon=True).start()
+        return
+
+    cmd = "DISPENSE" if action == "dispense" else "RETURN"
+    self._serial_send(f"{cmd} {rid} {int(motor_id)}\n")
 
 
 def main():

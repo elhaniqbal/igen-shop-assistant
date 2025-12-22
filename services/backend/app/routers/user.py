@@ -11,7 +11,12 @@ from ..usecases.user_flow import (
     list_active_loans,
 )
 
+from ..usecases.rfid_flow import get_user_by_card
+
+
 router = APIRouter(tags=["user"])
+
+
 
 @router.post("/dispense", response_model=schemas.DispenseBatchResponse)
 def dispense(req: schemas.DispenseBatchRequest,
@@ -75,3 +80,10 @@ def return_status(batch_id: str, db: Session = Depends(get_db)):
 @router.get("/loans")
 def loans(user_id: str, db: Session = Depends(get_db)):
     return {"user_id": user_id, "loans": list_active_loans(db, user_id)}
+
+@router.post("/auth/card")
+def auth_card(req: schemas.CardAuthRequest, db: Session = Depends(get_db)):
+    try:
+        return get_user_by_card(db, req.card_id)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
