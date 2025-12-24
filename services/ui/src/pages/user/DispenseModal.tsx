@@ -1,77 +1,177 @@
-import { useEffect, useMemo, useState } from "react";
-import { RotarySpinner } from "./RotarySpinner";
-import type { ToolModel } from "./mockData";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { HardwareSpinner } from "../../components/RotarySpinner";
+import { apiUser, type BatchStatusItem, type HwStatus } from "../../lib/api.user";
+import type { ToolModel } from "../../lib/api.admin";
 
 type Phase = "select_period" | "dispensing" | "confirm_pickup" | "done" | "failed";
+
+function msg(e: any) {
+  return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
+}
+
+function allDone(items: BatchStatusItem[]) {
+  return items.length > 0 && items.every((x) => x.hw_status === "dispensed_ok" || x.hw_status === "failed");
+}
+function anyOk(items: BatchStatusItem[]) {
+  return items.some((x) => x.hw_status === "dispensed_ok");
+}
+function statusLabel(s: HwStatus) {
+  if (s === "pending") return "Pending";
+  if (s === "accepted") return "Accepted";
+  if (s === "in_progress") return "In Progress";
+  if (s === "dispensed_ok") return "Succeeded";
+  if (s === "failed") return "Failed";
+  if (s === "confirmed") return "Confirmed";
+if (s === "pickup_mismatch") return "Pickup Mismatch";
+  return s;
+}
 
 export function DispenseModal({
   open,
   onClose,
   tool,
-  onDispenseDone,
+  cartItems,
+  userId,
+  readerId,
+  onDispenseCompleted,
 }: {
   open: boolean;
   onClose: () => void;
-  tool: ToolModel | null;
-  onDispenseDone: (tool_item_id: string, loan_hours: number) => void;
+
+  // Backwards compatible: you can keep passing a single tool
+  tool?: ToolModel | null;
+
+  // Shopping cart: future-proof (recommended)
+  cartItems?: { tool_model_id: string; qty: number; label?: string }[];
+
+  userId: string;
+  readerId: string;
+  onDispenseCompleted: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>("select_period");
   const [hours, setHours] = useState<number>(8);
   const [toolTag, setToolTag] = useState<string>("");
   const [err, setErr] = useState<string>("");
 
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [items, setItems] = useState<BatchStatusItem[]>([]);
+  const pollRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!open) return;
+
     setPhase("select_period");
     setHours(8);
     setToolTag("");
     setErr("");
+    setBatchId(null);
+    setItems([]);
+
+    return () => {
+      if (pollRef.current) window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
   }, [open]);
 
-  const title = useMemo(() => {
-    if (!tool) return "Dispense Tool";
-    return `Dispense Tool`;
-  }, [tool]);
+  const effectiveCart = useMemo(() => {
+    if (cartItems && cartItems.length) return cartItems.filter((x) => x.qty > 0);
+    if (tool) return [{ tool_model_id: tool.tool_model_id, qty: 1, label: tool.name }];
+    return [];
+  }, [cartItems, tool]);
 
-  if (!open || !tool) return null;
+  const title = useMemo(() => "Dispense Tools", []);
+  const canStart = open && effectiveCart.length > 0;
 
-  const simulateHardwareDispense = () => {
-    setPhase("dispensing");
-    setErr("");
-
-    // Simulate: ACK quickly, then done after a deterministic delay
-    const ackMs = 200;
-    const doneMs = 2200;
-
-    window.setTimeout(() => {
-      // ACK stage (we don't show a separate screen; you could add it)
-    }, ackMs);
-
-    window.setTimeout(() => {
-      const ok = true; // flip to Math.random() > 0.1 to test failure paths
-      if (ok) setPhase("confirm_pickup");
-      else {
-        setErr("Hardware dispense failed (SIM_JAM_GANTRY).");
+  const startDispense = async () => {
+    try {
+      setErr("");
+      if (!canStart) {
+        setErr("Nothing selected to dispense.");
         setPhase("failed");
+        return;
       }
-    }, doneMs);
-  };
 
-  const confirmPickup = () => {
-    // In real life: toolTag must match expected tool_tag_id from DB for that request_id
-    if (!toolTag.trim()) {
-      setErr("Enter or tap the tool tag to confirm pickup.");
-      return;
+      setPhase("dispensing");
+
+      // IMPORTANT: This assumes you change backend to accept tool_model_id+qty.
+      const resp = await apiUser.dispense({
+        user_id: userId,
+        items: effectiveCart.map((x) => ({ tool_model_id: x.tool_model_id, qty: x.qty })),
+        loan_period_hours: hours,
+      });
+
+      setBatchId(resp.batch_id);
+
+      const tick = async () => {
+        const st = await apiUser.dispenseStatus(resp.batch_id);
+        setItems(st.items);
+
+        if (allDone(st.items)) {
+          if (pollRef.current) window.clearInterval(pollRef.current);
+          pollRef.current = null;
+
+          // If at least one succeeded, we go to confirm pickup.
+          // If all failed, we show failed.
+          if (anyOk(st.items)) {
+            setPhase("confirm_pickup");
+          } else {
+            setErr("All dispenses failed.");
+            setPhase("failed");
+          }
+        }
+      };
+
+      await tick();
+      pollRef.current = window.setInterval(() => tick().catch((e) => setErr(msg(e))), 800);
+    } catch (e: any) {
+      setErr(msg(e));
+      setPhase("failed");
     }
-    setErr("");
-    setPhase("done");
-
-    // For the demo: generate a fake unique tool_item_id label
-    const tool_item_id = `TOOL-${String(Math.floor(100 + Math.random() * 900))}-A`;
-    onDispenseDone(tool_item_id, hours);
-
-    window.setTimeout(() => onClose(), 700);
   };
+
+  const waitForToolScan = async () => {
+    try {
+      setErr("");
+      await apiUser.rfidSetMode({ reader_id: readerId, mode: "tool" });
+
+      for (let i = 0; i < 30; i++) {
+        const r = await apiUser.rfidConsume(readerId, "tool");
+        if (r.ok && r.scan) {
+          const tag = r.scan.tag_id ?? r.scan.uid;
+          if (tag) {
+            setToolTag(tag);
+            return;
+          }
+        }
+        await new Promise((res) => setTimeout(res, 250));
+      }
+      setErr("No tool scan received. Tap the tool tag again or type it.");
+    } catch (e: any) {
+      setErr(msg(e));
+    }
+  };
+
+const confirmPickup = async () => {
+  const tag = toolTag.trim();
+  if (!tag) {
+    setErr("Enter or tap the tool tag to confirm pickup.");
+    return;
+  }
+  try {
+    setErr("");
+    await apiUser.dispenseConfirm({ user_id: userId, tool_tag_id: tag });
+
+    // only NOW is it a real checkout
+    setPhase("done");
+    onDispenseCompleted(); // refresh loans + inventory
+    window.setTimeout(() => onClose(), 650);
+  } catch (e: any) {
+    // mismatch/unknown tag comes here now
+    setErr(msg(e)); // your http wrapper should surface detail
+  }
+};
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -85,10 +185,18 @@ export function DispenseModal({
 
         <div className="px-6 py-5">
           <div className="rounded-xl border bg-rose-50 p-4">
-            <div className="text-base font-semibold">{tool.name}</div>
-            <div className="text-sm text-slate-600">{tool.category}</div>
-            <div className="mt-2 text-xs text-slate-600">
-              Tool Model ID: <span className="font-mono">{tool.tool_model_id}</span>
+            <div className="text-base font-semibold">Cart</div>
+            <div className="mt-2 space-y-1 text-sm text-slate-700">
+              {effectiveCart.length ? (
+                effectiveCart.map((x) => (
+                  <div key={x.tool_model_id} className="flex items-center justify-between">
+                    <span className="font-mono text-xs">{x.tool_model_id}</span>
+                    <span className="font-semibold">x{x.qty}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-slate-600">No items selected.</div>
+              )}
             </div>
           </div>
 
@@ -114,8 +222,9 @@ export function DispenseModal({
                   Cancel
                 </button>
                 <button
-                  className="rounded-xl bg-rose-600 px-4 py-2 font-semibold text-white hover:bg-rose-700"
-                  onClick={simulateHardwareDispense}
+                  disabled={!canStart}
+                  className="rounded-xl bg-rose-600 px-4 py-2 font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
+                  onClick={startDispense}
                 >
                   Confirm Dispense
                 </button>
@@ -125,39 +234,56 @@ export function DispenseModal({
 
           {phase === "dispensing" && (
             <div className="mt-5">
-              <RotarySpinner label="Dispensing tool..." />
+              <HardwareSpinner label="Dispensing..." />
               <div className="mt-4 rounded-xl border bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                Waiting for mechanical completion event…
+                {batchId ? (
+                  <div>
+                    <div>
+                      batch_id: <span className="font-mono">{batchId}</span>
+                    </div>
+                    <div className="mt-2">
+                      {items.length ? (
+                        <ul className="space-y-1">
+                          {items.map((it) => (
+                            <li key={it.request_id} className="flex items-center justify-between">
+                              <span className="font-mono text-xs">{it.request_id.slice(0, 10)}…</span>
+                              <span className="text-xs">{statusLabel(it.hw_status)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div>Waiting for status…</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  "Creating dispense batch…"
+                )}
               </div>
+              {err && <div className="mt-3 rounded-lg bg-rose-100 px-3 py-2 text-sm text-rose-700">{err}</div>}
             </div>
           )}
 
           {phase === "confirm_pickup" && (
             <div className="mt-5 space-y-3">
               <div className="rounded-xl border bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                Dispense complete. Now confirm pickup by tapping the tool tag (or type it).
+                Dispense complete. Confirm pickup by tapping the tool tag (or type it).
               </div>
 
-              <div className="text-sm font-medium text-slate-700">Tool Tag / Barcode</div>
+              <div className="text-sm font-medium text-slate-700">Tool Tag / UID</div>
               <input
                 className="w-full rounded-xl border px-4 py-3 font-mono focus:outline-none focus:ring-2 focus:ring-rose-300"
                 value={toolTag}
                 onChange={(e) => setToolTag(e.target.value)}
-                placeholder="Tap tool tag or type e.g. TAG-ABC-123"
+                placeholder="Tap tool tag or type"
               />
 
               <div className="flex items-center gap-3">
-                <button
-                  className="rounded-xl border px-4 py-2 hover:bg-slate-50"
-                  onClick={() => setToolTag("TAG-SIM-TOOL-001")}
-                >
-                  Simulate Tap
+                <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={waitForToolScan}>
+                  Wait for tool scan
                 </button>
 
-                <button
-                  className="ml-auto rounded-xl bg-rose-600 px-4 py-2 font-semibold text-white hover:bg-rose-700"
-                  onClick={confirmPickup}
-                >
+                <button className="ml-auto rounded-xl bg-rose-600 px-4 py-2 font-semibold text-white hover:bg-rose-700" onClick={confirmPickup}>
                   Confirm Pickup
                 </button>
               </div>
@@ -168,9 +294,7 @@ export function DispenseModal({
 
           {phase === "failed" && (
             <div className="mt-5 space-y-3">
-              <div className="rounded-xl border bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                Dispense failed. Please contact shop staff.
-              </div>
+              <div className="rounded-xl border bg-rose-50 px-4 py-3 text-sm text-rose-700">Dispense failed.</div>
               {err && <div className="rounded-lg bg-rose-100 px-3 py-2 text-sm text-rose-700">{err}</div>}
               <div className="flex justify-end">
                 <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={onClose}>
@@ -181,9 +305,7 @@ export function DispenseModal({
           )}
 
           {phase === "done" && (
-            <div className="mt-5 rounded-xl border bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-              Pickup confirmed ✅
-            </div>
+            <div className="mt-5 rounded-xl border bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Pickup confirmed ✅</div>
           )}
         </div>
       </div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -44,7 +45,6 @@ def log_event(
         payload_json=json.dumps(payload or {}),
     ))
 
-
 # ---------------- USERS ----------------
 def list_users(db: Session, search: Optional[str], role: Optional[str], status: Optional[str], limit: int):
     q = select(models.User)
@@ -65,16 +65,23 @@ def list_users(db: Session, search: Optional[str], role: Optional[str], status: 
     return db.execute(q).scalars().all()
 
 def create_user(db: Session, body: AdminUserCreate):
-    if db.get(models.User, body.user_id):
+    data = body.model_dump()
+
+    # generate user_id if missing
+    if not data.get("user_id"):
+        data["user_id"] = uuid.uuid4().hex
+
+    if db.get(models.User, data["user_id"]):
         _conflict("user_id_already_exists")
-    if body.card_id:
-        ex = db.execute(select(models.User).where(models.User.card_id == body.card_id)).scalar_one_or_none()
+
+    if data.get("card_id"):
+        ex = db.execute(select(models.User).where(models.User.card_id == data["card_id"])).scalar_one_or_none()
         if ex:
             _conflict("card_id_already_in_use")
 
-    u = models.User(**body.model_dump(), created_at=utcnow(), updated_at=utcnow())
+    u = models.User(**data, created_at=utcnow(), updated_at=utcnow())
     db.add(u)
-    log_event(db, "admin_user_created", payload=body.model_dump())
+    log_event(db, "admin_user_created", payload=data)
     db.commit()
     db.refresh(u)
     return u
@@ -110,7 +117,6 @@ def delete_user(db: Session, user_id: str):
     db.commit()
     return {"ok": True}
 
-
 # ---------------- TOOL MODELS ----------------
 def list_tool_models(db: Session, search: Optional[str], category: Optional[str], limit: int):
     q = select(models.ToolModel)
@@ -123,11 +129,18 @@ def list_tool_models(db: Session, search: Optional[str], category: Optional[str]
     return db.execute(q).scalars().all()
 
 def create_tool_model(db: Session, body: AdminToolModelCreate):
-    if db.get(models.ToolModel, body.tool_model_id):
+    data = body.model_dump()
+
+    # generate tool_model_id if missing
+    if not data.get("tool_model_id"):
+        data["tool_model_id"] = uuid.uuid4().hex
+
+    if db.get(models.ToolModel, data["tool_model_id"]):
         _conflict("tool_model_id_already_exists")
-    tm = models.ToolModel(**body.model_dump())
+
+    tm = models.ToolModel(**data)
     db.add(tm)
-    log_event(db, "admin_tool_model_created", payload=body.model_dump())
+    log_event(db, "admin_tool_model_created", payload=data)
     db.commit()
     db.refresh(tm)
     return tm
@@ -158,7 +171,6 @@ def delete_tool_model(db: Session, tool_model_id: str):
     db.commit()
     return {"ok": True}
 
-
 # ---------------- TOOL ITEMS ----------------
 def list_tool_items(db: Session, tool_model_id: Optional[str], cake_id: Optional[str], is_active: Optional[bool], search: Optional[str], limit: int):
     q = select(models.ToolItem)
@@ -180,18 +192,26 @@ def list_tool_items(db: Session, tool_model_id: Optional[str], cake_id: Optional
     return db.execute(q).scalars().all()
 
 def create_tool_item(db: Session, body: AdminToolItemCreate):
-    if db.get(models.ToolItem, body.tool_item_id):
+    data = body.model_dump()
+
+    # generate tool_item_id if missing
+    if not data.get("tool_item_id"):
+        data["tool_item_id"] = uuid.uuid4().hex
+
+    if db.get(models.ToolItem, data["tool_item_id"]):
         _conflict("tool_item_id_already_exists")
-    if not db.get(models.ToolModel, body.tool_model_id):
+
+    if not db.get(models.ToolModel, data["tool_model_id"]):
         raise HTTPException(status_code=400, detail="invalid_tool_model_id")
 
-    ex_tag = db.execute(select(models.ToolItem).where(models.ToolItem.tool_tag_id == body.tool_tag_id)).scalar_one_or_none()
+    # tool_tag_id required by DB; schema enforces str
+    ex_tag = db.execute(select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])).scalar_one_or_none()
     if ex_tag:
         _conflict("tool_tag_id_already_in_use")
 
-    ti = models.ToolItem(**body.model_dump(), created_at=utcnow(), updated_at=utcnow())
+    ti = models.ToolItem(**data, created_at=utcnow(), updated_at=utcnow())
     db.add(ti)
-    log_event(db, "admin_tool_item_created", payload=body.model_dump(), tool_item_id=body.tool_item_id)
+    log_event(db, "admin_tool_item_created", payload=data, tool_item_id=data["tool_item_id"])
     db.commit()
     db.refresh(ti)
     return ti
@@ -238,7 +258,6 @@ def delete_tool_item(db: Session, tool_item_id: str):
     db.commit()
     return {"ok": True}
 
-
 # ---------------- LOANS (admin view + force patch) ----------------
 def list_loans(db: Session, active_only: bool, overdue_only: bool, user_id: Optional[str], tool_item_id: Optional[str], limit: int):
     q = select(models.Loan)
@@ -269,7 +288,6 @@ def patch_loan(db: Session, loan_id: str, body: AdminLoanPatch):
     db.commit()
     db.refresh(loan)
     return loan
-
 
 # ---------------- EVENTS (read-only) ----------------
 def list_events(db: Session, event_type: Optional[str], actor_id: Optional[str], request_id: Optional[str], tool_item_id: Optional[str], limit: int):

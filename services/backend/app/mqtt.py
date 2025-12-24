@@ -10,6 +10,8 @@ from .utils import with_db, mqtt_topic, dispatch_mqtt
 from . import models
 from .usecases.hw_events import apply_dispense_event, apply_return_event
 
+from .motor_test_store import set_motor_test_status
+
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
@@ -20,8 +22,9 @@ SUB_TOPICS = [
     "igen/evt/rfid/tool_scan",
     "igen/evt/system/fault",
     "igen/evt/system/status",
-    "igen/evt/admin_test/motor"
+    "igen/evt/admin_test/motor",
 ]
+
 
 class MqttBus:
     def __init__(self) -> None:
@@ -72,10 +75,7 @@ class MqttBus:
 
 @with_db
 def _handle_mqtt_message(db, topic: str, payload: dict):
-    if topic == "igen/evt/admin_test/motor":
-        dispatch_mqtt(db, topic, payload)
-        return
-    # Always log raw MQTT events
+    # Always log raw MQTT events (including admin test)
     db.add(models.Event(event_type=f"mqtt:{topic}", payload_json=json.dumps(payload)))
     db.commit()
 
@@ -84,6 +84,27 @@ def _handle_mqtt_message(db, topic: str, payload: dict):
 
 
 # ---------- Topic handlers ----------
+
+@mqtt_topic("igen/evt/admin_test/motor")
+def handle_evt_admin_test_motor(db, payload: dict):
+    """
+    Updates the in-memory motor test store that /admin/test/motor/{rid}/status returns.
+    """
+    request_id = payload.get("request_id")
+    stage = payload.get("stage")
+    if not request_id or not stage:
+        return
+
+    patch = {
+        "request_id": request_id,
+        "stage": stage,
+        "motor_id": payload.get("motor_id"),
+        "action": payload.get("action"),
+        "error_code": payload.get("error_code"),
+        "error_reason": payload.get("error_reason"),
+    }
+    set_motor_test_status(request_id, patch)
+
 
 @mqtt_topic("igen/evt/dispense")
 def handle_evt_dispense(db, payload: dict):
@@ -101,7 +122,7 @@ def handle_evt_dispense(db, payload: dict):
     elif stage == "in_progress":
         req.hw_status = "in_progress"
     elif stage == "succeeded":
-        req.hw_status = "dispensed_ok"  # mechanical success only
+        req.hw_status = "dispensed_ok"
     elif stage == "failed":
         req.hw_status = "failed"
         req.hw_error_code = payload.get("error_code")
@@ -147,26 +168,23 @@ def handle_evt_return(db, payload: dict):
 
 @mqtt_topic("igen/evt/rfid/card_scan")
 def handle_evt_card_scan(db, payload: dict):
-    # DB logging already happens in _handle_mqtt_message
     reader_id = payload.get("reader_id", "unknown")
-    from .routers.user import _rfid_set  # local import avoids circular import on startup
+    from .routers.rfid import _rfid_set
     _rfid_set(reader_id, "card", payload)
 
 
 @mqtt_topic("igen/evt/rfid/tool_scan")
 def handle_evt_tool_scan(db, payload: dict):
     reader_id = payload.get("reader_id", "unknown")
-    from .routers.user import _rfid_set
+    from .routers.rfid import _rfid_set
     _rfid_set(reader_id, "tool", payload)
 
 
 @mqtt_topic("igen/evt/system/fault")
 def handle_evt_fault(db, payload: dict):
-    # Log-only for now; later you can set a 'faults' table or status snapshot.
     pass
 
 
 @mqtt_topic("igen/evt/system/status")
 def handle_evt_status(db, payload: dict):
-    # Heartbeat log; later you can store last-seen per node.
     pass

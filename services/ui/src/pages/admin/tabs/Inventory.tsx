@@ -1,146 +1,745 @@
-import { useEffect, useState } from "react";
-import { getInventory } from "../../../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { apiAdmin, type ToolItem, type ToolModel } from "../../../lib/api.admin";
+import { apiUser } from "../../../lib/api.user";
+
+function msg(e: any) {
+  return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
+}
+
+type ConditionStatus = "ok" | "worn" | "damaged" | "missing_parts";
+const CONDITION_OPTIONS: { value: ConditionStatus; label: string }[] = [
+  { value: "ok", label: "ok" },
+  { value: "worn", label: "worn" },
+  { value: "damaged", label: "damaged" },
+  { value: "missing_parts", label: "missing_parts" },
+];
+
+type ModelForm = {
+  name: string;
+  category: string;
+  description: string;
+  max_loan_hours: string;     // UI string -> convert to number|null on save
+  max_qty_per_user: string;   // UI string -> convert to number|null on save
+};
+
+function toOptInt(s: string): number | null {
+  const t = s.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) throw new Error("Must be an integer");
+  return n;
+}
 
 export default function Inventory() {
-  const [rows, setRows] = useState<any[]>([]);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  useEffect(() => { (async () => setRows(await getInventory()))(); }, []);
+  const [models, setModels] = useState<ToolModel[]>([]);
+  const [items, setItems] = useState<ToolItem[]>([]);
+  const [err, setErr] = useState<string | null>(null);
 
-  const toggle = (name: string) => setOpen((p) => ({ ...p, [name]: !p[name] }));
+  const [qModels, setQModels] = useState("");
+  const [qItems, setQItems] = useState("");
 
-  const totals = rows.reduce((a, r) => {
-    a.total += r.total ?? 0;
-    a.available += r.available ?? 0;
-    a.checked += r.checked_out ?? 0;
-    return a;
-  }, { total: 0, available: 0, checked: 0 });
+  const [modal, setModal] = useState<
+    | null
+    | { kind: "model_create" }
+    | { kind: "model_edit"; m: ToolModel }
+    | { kind: "item_create" }
+    | { kind: "item_edit"; it: ToolItem }
+    | { kind: "tag"; it: ToolItem }
+  >(null);
+
+  const load = async () => {
+    try {
+      setErr(null);
+      const [m, it] = await Promise.all([apiAdmin.listToolModels({ limit: 1000 }), apiAdmin.listToolItems({ limit: 2000 })]);
+      setModels(m);
+      setItems(it);
+    } catch (e: any) {
+      setErr(msg(e));
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filteredModels = useMemo(() => {
+    const s = qModels.trim().toLowerCase();
+    if (!s) return models;
+    return models.filter((m) =>
+      `${m.name} ${m.category ?? ""} ${m.tool_model_id} ${m.max_loan_hours ?? ""} ${m.max_qty_per_user ?? ""}`.toLowerCase().includes(s)
+    );
+  }, [models, qModels]);
+
+  const filteredItems = useMemo(() => {
+    const s = qItems.trim().toLowerCase();
+    if (!s) return items;
+    return items.filter((it) =>
+      `${it.tool_item_id} ${it.tool_model_id} ${it.cake_id} ${it.slot_id} ${it.tool_tag_id ?? ""} ${it.condition_status}`.toLowerCase().includes(s)
+    );
+  }, [items, qItems]);
+
+  const modelName = (id: string) => models.find((x) => x.tool_model_id === id)?.name ?? id;
+
+  const fmtOpt = (n?: number | null) => (n === null || n === undefined ? "—" : String(n));
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Stat title="Total Tools" value={totals.total || 24} />
-        <Stat title="Available" value={totals.available || 19} tint="emerald" />
-        <Stat title="Checked Out" value={totals.checked || 5} tint="rose" />
-        <Stat title="Low Stock Items" value={0} tint="amber" />
-      </div>
+    <div className="space-y-6">
+      {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
 
-      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-5 flex items-center justify-between">
+      {/* TOOL MODELS */}
+      <div className="rounded-2xl border bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between">
           <div>
-            <div className="font-semibold">Inventory Overview</div>
-            <div className="text-sm text-slate-600">Aggregated view of all tools. Click to expand and see individual locations.</div>
+            <div className="font-semibold">Tool Models</div>
+            <div className="text-sm text-slate-600 mt-1">Define the catalog of tools</div>
           </div>
-          <button className="rounded-xl bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 text-sm font-semibold">
-            + Add New Tool
-          </button>
+          <div className="flex gap-2">
+            <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={load}>
+              Refresh
+            </button>
+            <button
+              className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800"
+              onClick={() => setModal({ kind: "model_create" })}
+            >
+              + Add Model
+            </button>
+          </div>
         </div>
 
-        <div className="overflow-auto">
+        <div className="mt-4 flex gap-3">
+          <input
+            value={qModels}
+            onChange={(e) => setQModels(e.target.value)}
+            className="flex-1 rounded-xl border px-4 py-2"
+            placeholder="Search tool models..."
+          />
+        </div>
+
+        <div className="mt-4 overflow-auto rounded-2xl border border-slate-200">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
-                <th className="text-left p-4 w-12"></th>
-                <th className="text-left p-4">Tool Name</th>
-                <th className="text-left p-4">Locations</th>
+                <th className="text-left p-4">Name</th>
                 <th className="text-left p-4">Category</th>
-                <th className="text-left p-4">Available</th>
-                <th className="text-left p-4">Total</th>
-                <th className="text-left p-4">Checked Out</th>
-                <th className="text-left p-4">Status</th>
+                <th className="text-left p-4">Max Loan (hrs)</th>
+                <th className="text-left p-4">Max Qty/User</th>
+                <th className="text-left p-4">Model ID</th>
+                <th className="text-right p-4">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
-                const isOpen = !!open[r.name];
-                return (
-                  <>
-                    <tr key={r.name} className="border-t border-slate-100">
-                      <td className="p-4">
-                        <button onClick={() => toggle(r.name)} className="text-slate-500 hover:text-slate-900">
-                          {isOpen ? "▾" : "▸"}
-                        </button>
-                      </td>
-                      <td className="p-4 font-medium">{r.name}</td>
-                      <td className="p-4">
-                        <div className="flex gap-2 flex-wrap">
-                          {(r.locations ?? []).slice(0,3).map((l: string) => (
-                            <span key={l} className="rounded-lg bg-rose-600 text-white px-2 py-1 text-xs font-semibold">{l}</span>
-                          ))}
-                          {(r.locations ?? []).length > 3 && (
-                            <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs">+{(r.locations.length - 3)}</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="p-4">{r.category}</td>
-                      <td className="p-4">{r.available}</td>
-                      <td className="p-4">{r.total}</td>
-                      <td className="p-4">{r.checked_out}</td>
-                      <td className="p-4">
-                        <span className="rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 text-xs font-semibold">
-                          {r.status ?? "In Stock"}
-                        </span>
-                      </td>
-                    </tr>
-
-                    {isOpen && (
-                      <tr className="border-t border-slate-100 bg-slate-50/40">
-                        <td colSpan={8} className="p-4">
-                          <div className="rounded-xl bg-white border border-slate-200 overflow-hidden">
-                            <table className="w-full text-sm">
-                              <thead className="bg-slate-50 text-slate-600">
-                                <tr>
-                                  <th className="text-left p-3 w-44">Tool Item</th>
-                                  <th className="text-left p-3 w-28">Loc</th>
-                                  <th className="text-left p-3">State</th>
-                                  <th className="text-right p-3 w-16"> </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {(r.items ?? []).map((it: any) => (
-                                  <tr key={it.tool_item_id} className="border-t border-slate-100">
-                                    <td className="p-3 text-slate-700">{it.tool_item_id}</td>
-                                    <td className="p-3">
-                                      <span className="rounded-lg bg-rose-100 text-rose-700 px-2 py-1 text-xs font-semibold">{it.loc}</span>
-                                    </td>
-                                    <td className="p-3">
-                                      <span className={it.state === "Checked Out"
-                                        ? "text-rose-700 font-semibold"
-                                        : "text-emerald-700 font-semibold"}>
-                                        {it.state}
-                                      </span>
-                                    </td>
-                                    <td className="p-3 text-right text-slate-500">🗑️</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </>
-                );
-              })}
-              {rows.length === 0 && <tr><td colSpan={8} className="p-6 text-slate-500">No tools.</td></tr>}
+              {filteredModels.map((m) => (
+                <tr key={m.tool_model_id} className="border-t border-slate-100">
+                  <td className="p-4 font-medium">{m.name}</td>
+                  <td className="p-4">{m.category ?? "—"}</td>
+                  <td className="p-4">{fmtOpt(m.max_loan_hours)}</td>
+                  <td className="p-4">{fmtOpt(m.max_qty_per_user)}</td>
+                  <td className="p-4 font-mono text-xs">{m.tool_model_id}</td>
+                  <td className="p-4 text-right space-x-2">
+                    <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setModal({ kind: "model_edit", m })}>
+                      Edit
+                    </button>
+                    <button
+                      className="rounded-lg border px-3 py-1 hover:bg-rose-50 text-rose-700"
+                      onClick={async () => {
+                        if (!confirm("Delete tool model?")) return;
+                        await apiAdmin.deleteToolModel(m.tool_model_id);
+                        await load();
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {filteredModels.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-6 text-slate-500">
+                    No tool models.
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* TOOL ITEMS */}
+      <div className="rounded-2xl border bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-semibold">Tool Items</div>
+            <div className="text-sm text-slate-600 mt-1">Physical inventory (cake_id/slot_id)</div>
+          </div>
+          <div className="flex gap-2">
+            <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={load}>
+              Refresh
+            </button>
+            <button
+              className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800"
+              onClick={() => setModal({ kind: "item_create" })}
+            >
+              + Add Item
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex gap-3">
+          <input
+            value={qItems}
+            onChange={(e) => setQItems(e.target.value)}
+            className="flex-1 rounded-xl border px-4 py-2"
+            placeholder="Search tool items..."
+          />
+        </div>
+
+        <div className="mt-4 overflow-auto rounded-2xl border border-slate-200">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left p-4">Tool Item</th>
+                <th className="text-left p-4">Model</th>
+                <th className="text-left p-4">Cake/Slot</th>
+                <th className="text-left p-4">Tag</th>
+                <th className="text-left p-4">Condition</th>
+                <th className="text-left p-4">Active</th>
+                <th className="text-right p-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.map((it) => (
+                <tr key={it.tool_item_id} className="border-t border-slate-100">
+                  <td className="p-4 font-mono text-xs">{it.tool_item_id}</td>
+                  <td className="p-4">{modelName(it.tool_model_id)}</td>
+                  <td className="p-4 font-mono text-xs">
+                    {it.cake_id}/{it.slot_id}
+                  </td>
+                  <td className="p-4 font-mono text-xs">{it.tool_tag_id ?? "—"}</td>
+                  <td className="p-4">{it.condition_status}</td>
+                  <td className="p-4">{it.is_active ? "yes" : "no"}</td>
+                  <td className="p-4 text-right space-x-2">
+                    <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setModal({ kind: "tag", it })}>
+                      Assign Tag
+                    </button>
+                    <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setModal({ kind: "item_edit", it })}>
+                      Edit
+                    </button>
+                    <button
+                      className="rounded-lg border px-3 py-1 hover:bg-rose-50 text-rose-700"
+                      onClick={async () => {
+                        if (!confirm("Delete tool item?")) return;
+                        await apiAdmin.deleteToolItem(it.tool_item_id);
+                        await load();
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {filteredItems.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-6 text-slate-500">
+                    No tool items.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* MODALS */}
+      {modal?.kind === "model_create" ? (
+        <ToolModelModal
+          title="Create Tool Model"
+          initial={{ name: "", category: "", description: "", max_loan_hours: "", max_qty_per_user: "" }}
+          onClose={() => setModal(null)}
+          onSave={async (v) => {
+            const max_loan_hours = toOptInt(v.max_loan_hours);
+            const max_qty_per_user = toOptInt(v.max_qty_per_user);
+
+            // basic sanity (you can tighten these later)
+            if (max_loan_hours !== null && (max_loan_hours < 1 || max_loan_hours > 24 * 30)) {
+              throw new Error("max_loan_hours must be between 1 and 720");
+            }
+            if (max_qty_per_user !== null && (max_qty_per_user < 1 || max_qty_per_user > 100)) {
+              throw new Error("max_qty_per_user must be between 1 and 100");
+            }
+
+            await apiAdmin.createToolModel({
+              name: v.name,
+              category: v.category || null,
+              description: v.description || null,
+              max_loan_hours,
+              max_qty_per_user,
+            });
+
+            setModal(null);
+            await load();
+          }}
+        />
+      ) : null}
+
+      {modal?.kind === "model_edit" ? (
+        <ToolModelModal
+          title="Edit Tool Model"
+          initial={{
+            name: modal.m.name,
+            category: modal.m.category ?? "",
+            description: modal.m.description ?? "",
+            max_loan_hours: modal.m.max_loan_hours?.toString() ?? "",
+            max_qty_per_user: modal.m.max_qty_per_user?.toString() ?? "",
+          }}
+          onClose={() => setModal(null)}
+          onSave={async (v) => {
+            const max_loan_hours = toOptInt(v.max_loan_hours);
+            const max_qty_per_user = toOptInt(v.max_qty_per_user);
+
+            if (max_loan_hours !== null && (max_loan_hours < 1 || max_loan_hours > 24 * 30)) {
+              throw new Error("max_loan_hours must be between 1 and 720");
+            }
+            if (max_qty_per_user !== null && (max_qty_per_user < 1 || max_qty_per_user > 100)) {
+              throw new Error("max_qty_per_user must be between 1 and 100");
+            }
+
+            await apiAdmin.patchToolModel(modal.m.tool_model_id, {
+              name: v.name,
+              category: v.category || null,
+              description: v.description || null,
+              max_loan_hours,
+              max_qty_per_user,
+            });
+
+            setModal(null);
+            await load();
+          }}
+        />
+      ) : null}
+
+      {modal?.kind === "item_create" ? (
+        <ToolItemModal
+          title="Create Tool Item"
+          models={models}
+          readerId="kiosk_1_reader_1"
+          initial={{
+            tool_model_id: models[0]?.tool_model_id ?? "",
+            cake_id: "cake_1",
+            slot_id: "1",
+            condition_status: "ok",
+            is_active: true,
+            tool_tag_id: "", // REQUIRED by DB
+          }}
+          onClose={() => setModal(null)}
+          onSave={async (v) => {
+            await apiAdmin.createToolItem({
+              tool_model_id: v.tool_model_id,
+              cake_id: v.cake_id,
+              slot_id: v.slot_id,
+              condition_status: v.condition_status,
+              is_active: v.is_active,
+              tool_tag_id: v.tool_tag_id.trim(), // REQUIRED
+            });
+            setModal(null);
+            await load();
+          }}
+        />
+      ) : null}
+
+      {modal?.kind === "item_edit" ? (
+        <ToolItemModal
+          title="Edit Tool Item"
+          models={models}
+          readerId="kiosk_1_reader_1"
+          initial={{
+            tool_model_id: modal.it.tool_model_id,
+            cake_id: modal.it.cake_id,
+            slot_id: modal.it.slot_id,
+            condition_status: (modal.it.condition_status as ConditionStatus) ?? "ok",
+            is_active: modal.it.is_active,
+            tool_tag_id: modal.it.tool_tag_id ?? "",
+          }}
+          onClose={() => setModal(null)}
+          onSave={async (v) => {
+            await apiAdmin.patchToolItem(modal.it.tool_item_id, {
+              tool_model_id: v.tool_model_id,
+              cake_id: v.cake_id,
+              slot_id: v.slot_id,
+              condition_status: v.condition_status,
+              is_active: v.is_active,
+              tool_tag_id: v.tool_tag_id.trim(),
+            });
+            setModal(null);
+            await load();
+          }}
+        />
+      ) : null}
+
+      {modal?.kind === "tag" ? (
+        <AssignToolTagModal toolItem={modal.it} readerId="kiosk_1_reader_1" onClose={() => setModal(null)} onDone={load} />
+      ) : null}
+    </div>
+  );
+}
+
+function ToolModelModal({
+  title,
+  initial,
+  onClose,
+  onSave,
+}: {
+  title: string;
+  initial: ModelForm;
+  onClose: () => void;
+  onSave: (v: ModelForm) => Promise<void>;
+}) {
+  const [v, setV] = useState<ModelForm>(initial);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <div className="text-lg font-semibold">{title}</div>
+          <button className="rounded-lg px-3 py-1 text-slate-500 hover:bg-slate-100" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+
+          <Field label="Name">
+            <input className="w-full rounded-xl border px-3 py-2" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
+          </Field>
+
+          <Field label="Category">
+            <input className="w-full rounded-xl border px-3 py-2" value={v.category} onChange={(e) => setV({ ...v, category: e.target.value })} />
+          </Field>
+
+          <Field label="Description">
+            <textarea
+              className="w-full rounded-xl border px-3 py-2"
+              rows={3}
+              value={v.description}
+              onChange={(e) => setV({ ...v, description: e.target.value })}
+            />
+          </Field>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Max Loan Hours (optional)">
+              <input
+                className="w-full rounded-xl border px-3 py-2"
+                value={v.max_loan_hours}
+                onChange={(e) => setV({ ...v, max_loan_hours: e.target.value })}
+                placeholder="e.g. 8, 24, 72"
+              />
+              <div className="mt-1 text-xs text-slate-500">Blank = no limit (default server policy).</div>
+            </Field>
+
+            <Field label="Max Qty Per User (optional)">
+              <input
+                className="w-full rounded-xl border px-3 py-2"
+                value={v.max_qty_per_user}
+                onChange={(e) => setV({ ...v, max_qty_per_user: e.target.value })}
+                placeholder="e.g. 1, 2, 5"
+              />
+              <div className="mt-1 text-xs text-slate-500">Blank = no limit.</div>
+            </Field>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              disabled={busy}
+              className="rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800 disabled:opacity-40"
+              onClick={async () => {
+                try {
+                  setBusy(true);
+                  setErr(null);
+                  await onSave(v);
+                } catch (e: any) {
+                  setErr(msg(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Save
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function Stat({ title, value, tint }: { title: string; value: any; tint?: "emerald"|"rose"|"amber" }) {
-  const cls =
-    tint === "emerald" ? "bg-emerald-50 border-emerald-200"
-    : tint === "rose" ? "bg-rose-50 border-rose-200"
-    : tint === "amber" ? "bg-amber-50 border-amber-200"
-    : "bg-white border-slate-200";
+function ToolItemModal({
+  title,
+  models,
+  initial,
+  readerId,
+  onClose,
+  onSave,
+}: {
+  title: string;
+  models: ToolModel[];
+  initial: {
+    tool_model_id: string;
+    cake_id: string;
+    slot_id: string;
+    condition_status: ConditionStatus;
+    is_active: boolean;
+    tool_tag_id: string; // REQUIRED (DB NOT NULL)
+  };
+  readerId: string;
+  onClose: () => void;
+  onSave: (v: typeof initial) => Promise<void>;
+}) {
+  const [v, setV] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [tapBusy, setTapBusy] = useState(false);
+
+  const tagTrim = v.tool_tag_id.trim();
+  const canSave = !!v.tool_model_id && !!v.cake_id.trim() && !!v.slot_id.trim() && !!tagTrim;
+
+  const tapForTag = async () => {
+    setTapBusy(true);
+    setErr(null);
+    try {
+      await apiUser.rfidSetMode({ reader_id: readerId, mode: "tool" });
+      for (let i = 0; i < 30; i++) {
+        const r = await apiUser.rfidConsume(readerId, "tool");
+        if (r.ok && r.scan) {
+          const id = r.scan.tag_id ?? r.scan.uid;
+          if (id) {
+            setV((prev) => ({ ...prev, tool_tag_id: id }));
+            return;
+          }
+        }
+        await new Promise((res) => setTimeout(res, 250));
+      }
+      setErr("No tool tap received. Tap again or paste tag.");
+    } catch (e: any) {
+      setErr(msg(e));
+    } finally {
+      setTapBusy(false);
+    }
+  };
 
   return (
-    <div className={`rounded-2xl border p-5 shadow-sm ${cls}`}>
-      <div className="text-slate-600 text-sm">{title}</div>
-      <div className="text-2xl font-semibold mt-2">{value}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <div className="text-lg font-semibold">{title}</div>
+          <button className="rounded-lg px-3 py-1 text-slate-500 hover:bg-slate-100" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+
+          <Field label="Tool Model">
+            <select className="w-full rounded-xl border px-3 py-2" value={v.tool_model_id} onChange={(e) => setV({ ...v, tool_model_id: e.target.value })}>
+              {models.map((m) => (
+                <option key={m.tool_model_id} value={m.tool_model_id}>
+                  {m.name} ({m.tool_model_id})
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Cake ID">
+              <input className="w-full rounded-xl border px-3 py-2 font-mono" value={v.cake_id} onChange={(e) => setV({ ...v, cake_id: e.target.value })} />
+            </Field>
+            <Field label="Slot ID">
+              <input className="w-full rounded-xl border px-3 py-2 font-mono" value={v.slot_id} onChange={(e) => setV({ ...v, slot_id: e.target.value })} />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Condition">
+              <select
+                className="w-full rounded-xl border px-3 py-2"
+                value={v.condition_status}
+                onChange={(e) => setV({ ...v, condition_status: e.target.value as ConditionStatus })}
+              >
+                {CONDITION_OPTIONS.map((x) => (
+                  <option key={x.value} value={x.value}>
+                    {x.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Active">
+              <select className="w-full rounded-xl border px-3 py-2" value={String(v.is_active)} onChange={(e) => setV({ ...v, is_active: e.target.value === "true" })}>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </Field>
+          </div>
+
+          <Field label="Tool Tag (required)">
+            <input
+              className="w-full rounded-xl border px-3 py-2 font-mono"
+              value={v.tool_tag_id}
+              onChange={(e) => setV({ ...v, tool_tag_id: e.target.value })}
+              placeholder="Tap tool tag or paste UID"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                disabled={tapBusy}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-40"
+                onClick={tapForTag}
+              >
+                Tap to fill
+              </button>
+              <div className="text-xs text-slate-500">
+                Reader: <span className="font-mono">{readerId}</span>
+              </div>
+            </div>
+            {!tagTrim ? <div className="mt-1 text-xs text-rose-700">Tool Tag is required (DB column is NOT NULL).</div> : null}
+          </Field>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              disabled={busy || !canSave}
+              className="rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800 disabled:opacity-40"
+              onClick={async () => {
+                try {
+                  if (!tagTrim) {
+                    setErr("tool_tag_id is required.");
+                    return;
+                  }
+                  setBusy(true);
+                  setErr(null);
+                  await onSave({ ...v, tool_tag_id: tagTrim });
+                } catch (e: any) {
+                  setErr(msg(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssignToolTagModal({
+  toolItem,
+  readerId,
+  onClose,
+  onDone,
+}: {
+  toolItem: ToolItem;
+  readerId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [tag, setTag] = useState(toolItem.tool_tag_id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const waitForTap = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiUser.rfidSetMode({ reader_id: readerId, mode: "tool" });
+      for (let i = 0; i < 30; i++) {
+        const r = await apiUser.rfidConsume(readerId, "tool");
+        if (r.ok && r.scan) {
+          const id = r.scan.tag_id ?? r.scan.uid;
+          if (id) {
+            setTag(id);
+            return;
+          }
+        }
+        await new Promise((res) => setTimeout(res, 250));
+      }
+      setErr("No tool tap received. Tap again or paste tag.");
+    } catch (e: any) {
+      setErr(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const assign = async () => {
+    const tool_tag_id = tag.trim();
+    if (!tool_tag_id) {
+      setErr("Tool tag is empty.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiAdmin.assignToolTag(toolItem.tool_item_id, tool_tag_id);
+      onDone();
+      onClose();
+    } catch (e: any) {
+      setErr(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <div className="text-lg font-semibold">Assign Tool Tag</div>
+          <button className="rounded-lg px-3 py-1 text-slate-500 hover:bg-slate-100" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          <div className="rounded-xl border bg-slate-50 p-4">
+            <div className="text-sm">tool_item_id</div>
+            <div className="font-mono text-xs">{toolItem.tool_item_id}</div>
+          </div>
+
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+
+          <Field label="Tool Tag ID">
+            <input className="w-full rounded-xl border px-3 py-2 font-mono" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Tap tool tag or paste UID" />
+          </Field>
+
+          <div className="flex items-center gap-3">
+            <button disabled={busy} className="rounded-xl border px-4 py-2 hover:bg-slate-50 disabled:opacity-40" onClick={waitForTap}>
+              Wait for tap
+            </button>
+            <button disabled={busy} className="ml-auto rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800 disabled:opacity-40" onClick={assign}>
+              Assign
+            </button>
+          </div>
+
+          <div className="text-xs text-slate-500">
+            Reader: <span className="font-mono">{readerId}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: any }) {
+  return (
+    <div>
+      <div className="text-sm font-medium text-slate-700">{label}</div>
+      <div className="mt-1">{children}</div>
     </div>
   );
 }

@@ -1,82 +1,120 @@
 import { useState } from "react";
-import { login } from "../lib/api";
+import { apiUser, type CardAuthResp, type RfidScan } from "../lib/api.user";
+import { RfidScanPanel } from "../components/RfidScanPanel";
+import { TapCardAnimation } from "../components/TapCardAnimation";
 import type { Session } from "../App";
 
-export default function Login({ onLogin }: { onLogin: (s: Session) => void }) {
-  const [userId, setUserId] = useState("ADMIN-001");
-  const [password, setPassword] = useState("admin123");
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+function msg(e: any) {
+  return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
+}
 
-  async function submit() {
-    setErr(null);
-    setLoading(true);
-    try {
-      const r = await login(userId.trim(), password);
-      onLogin({ role: r.role, token: r.token });
-    } catch (e: any) {
-      setErr(e?.message ?? "Login failed");
-    } finally {
-      setLoading(false);
+export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }) {
+  const [user, setUser] = useState<CardAuthResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [manual, setManual] = useState("");
+
+  const loginWithCardId = async (cardIdRaw: string) => {
+    const card_id = cardIdRaw.trim();
+    if (!card_id) {
+      setErr("Enter a card ID.");
+      return;
     }
-  }
+    try {
+      setErr(null);
+      const u = await apiUser.authCard({ card_id });
+      setUser(u);
+      onLogin({
+        role: u.role === "admin" ? "admin" : "user",
+        userId: u.user_id,
+        name: `${u.first_name} ${u.last_name}`,
+      });
+    } catch (e: any) {
+      setUser(null);
+      setErr(msg(e));
+    }
+  };
+
+  const onCardScan = async (scan: RfidScan) => {
+    const cardId = scan.tag_id ?? scan.uid;
+    if (!cardId) {
+      setErr("Scan missing tag_id/uid");
+      return;
+    }
+    await loginWithCardId(cardId);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-rose-700 to-rose-800 flex flex-col items-center justify-center p-6">
-      <div className="flex flex-col items-center mb-6">
-        <div className="h-14 w-14 rounded-2xl bg-rose-400/40 border border-white/20 grid place-items-center text-white text-2xl font-semibold shadow-sm">
-          H
+    <div className="min-h-screen bg-slate-50">
+      <div className="bg-rose-700 text-white">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/15 font-bold">H</div>
+            <div>
+              <div className="text-sm opacity-90">Haven Kiosk</div>
+              <div className="text-xs opacity-80">Tap card or enter ID</div>
+            </div>
+          </div>
         </div>
-        <div className="mt-3 text-white text-lg font-semibold">Haven Kiosk</div>
-        <div className="text-white/80 text-sm">Machine Shop Tool Tracking System</div>
       </div>
 
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-white/30 overflow-hidden">
-        <div className="p-8">
-          <div className="text-center text-rose-700 font-semibold mb-6">Sign In</div>
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <div className="text-2xl font-semibold text-slate-900">Login</div>
+        <div className="mt-1 text-sm text-slate-600">Student card login (no password).</div>
 
-          <label className="block text-sm font-medium text-slate-700">User ID / Badge Number</label>
-          <div className="mt-2">
-            <input
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-              className="w-full rounded-xl border border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-400 px-4 py-3"
-              placeholder="ADMIN-001"
-            />
+        {err ? <div className="mt-4 rounded-xl border bg-rose-50 p-3 text-rose-700">{err}</div> : null}
+
+        {user ? (
+          <div className="mt-4 rounded-xl border bg-emerald-50 p-3 text-emerald-800">
+            Logged in: {user.first_name} {user.last_name} ({user.role})
           </div>
+        ) : null}
 
-          <label className="block text-sm font-medium text-slate-700 mt-5">Password</label>
-          <div className="mt-2">
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-400 px-4 py-3"
-              placeholder="••••••••"
-            />
-          </div>
-
-          {err && <div className="mt-4 text-sm text-rose-700">{err}</div>}
-
-          <button
-            disabled={loading}
-            onClick={submit}
-            className="mt-6 w-full rounded-xl bg-rose-600 hover:bg-rose-700 text-white py-3 font-semibold shadow-sm disabled:opacity-60"
-          >
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-
-          <div className="mt-6 text-center text-slate-500 text-sm">Demo Credentials:</div>
-          <div className="mt-3 space-y-3">
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm">
-              <div><span className="text-slate-500">User:</span> <span className="text-rose-700 font-semibold">EMP-1001</span></div>
-              <div><span className="text-slate-500">Pass:</span> <span className="text-slate-800">user123</span></div>
+        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-semibold">Tap Card</div>
+                <div className="text-sm text-slate-600 mt-1">Use RFID reader</div>
+              </div>
+              <div className="opacity-90">
+                <TapCardAnimation />
+              </div>
             </div>
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm">
-              <div><span className="text-slate-500">Admin:</span> <span className="text-rose-700 font-semibold">ADMIN-001</span></div>
-              <div><span className="text-slate-500">Pass:</span> <span className="text-slate-800">admin123</span></div>
+
+            <div className="mt-4">
+              <RfidScanPanel
+                kind="card"
+                title="Tap student card"
+                subtitle="Waiting for scan…"
+                onScan={onCardScan}
+              />
             </div>
           </div>
+
+          <div className="rounded-2xl border bg-white p-6 shadow-sm">
+            <div className="font-semibold">Manual Entry</div>
+            <div className="text-sm text-slate-600 mt-1">Dev/testing fallback</div>
+
+            <div className="mt-4 text-sm font-medium text-slate-700">Card ID</div>
+            <input
+              className="mt-2 w-full rounded-xl border px-4 py-3 font-mono focus:outline-none focus:ring-2 focus:ring-rose-200"
+              placeholder="Paste card_id/uid"
+              value={manual}
+              onChange={(e) => setManual(e.target.value)}
+            />
+
+            <button
+              className="mt-4 w-full rounded-xl bg-rose-700 px-4 py-3 font-semibold text-white hover:bg-rose-800"
+              onClick={() => loginWithCardId(manual)}
+            >
+              Login
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-6 text-xs text-slate-500">
+          If tapping doesn’t work, your RFID sidecar isn’t publishing card scans to MQTT topic{" "}
+          <span className="font-mono">igen/evt/rfid/card_scan</span>.
         </div>
       </div>
     </div>

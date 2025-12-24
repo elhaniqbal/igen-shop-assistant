@@ -1,7 +1,12 @@
-from sqlalchemy import String, Integer, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import String, Integer, Boolean, DateTime, Text, ForeignKey, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from .db import Base
+
+import uuid
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
 
 def utcnow():
     return datetime.now()
@@ -26,6 +31,10 @@ class ToolModel(Base):
     name: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str | None] = mapped_column(String, nullable=True)
+
+ 
+    max_loan_hours = Column(Integer, nullable=True)      # e.g. 2..720
+    max_qty_per_user = Column(Integer, nullable=True)   # e.g. 1..50
 
 class ToolItem(Base):
     __tablename__ = "tool_items"

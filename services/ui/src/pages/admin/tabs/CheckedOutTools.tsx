@@ -1,46 +1,66 @@
 import { useEffect, useState } from "react";
-import { getCheckedOut } from "../../../lib/api";
+import { apiAdmin, type LoanOut } from "../../../lib/api.admin";
+
+function msg(e: any) {
+  return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
+}
 
 export default function CheckedOutTools() {
-  const [rows, setRows] = useState<any[]>([]);
-  useEffect(() => { (async () => setRows(await getCheckedOut()))(); }, []);
+  const [rows, setRows] = useState<LoanOut[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      setErr(null);
+      setRows(await apiAdmin.listLoans({ active_only: true, limit: 2000 }));
+    } catch (e: any) {
+      setErr(msg(e));
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
 
   return (
-    <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
-      <div className="p-5 font-semibold">Checked Out Tools</div>
-      <div className="overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+    <div className="rounded-2xl border p-4 bg-white shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-lg font-semibold">Checked Out Tools</div>
+        <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={load}>
+          Refresh
+        </button>
+      </div>
+
+      {err ? <div className="mt-3 rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+
+      <div className="mt-4 overflow-auto">
+        <table className="min-w-full text-sm">
+          <thead className="opacity-70">
             <tr>
-              <th className="text-left p-4">Tool</th>
-              <th className="text-left p-4">Tool ID</th>
-              <th className="text-left p-4">User</th>
-              <th className="text-left p-4">Checked Out</th>
-              <th className="text-left p-4">Expected Return</th>
-              <th className="text-left p-4">Status</th>
+              <th className="text-left py-2">Loan</th>
+              <th className="text-left py-2">User</th>
+              <th className="text-left py-2">Tool Item</th>
+              <th className="text-left py-2">Issued</th>
+              <th className="text-left py-2">Due</th>
+              <th className="text-left py-2">Status</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} className="border-t border-slate-100">
-                <td className="p-4 font-medium">{r.tool}</td>
-                <td className="p-4"><span className="rounded-lg bg-slate-100 px-2 py-1">{r.tool_id}</span></td>
-                <td className="p-4">{r.user}</td>
-                <td className="p-4">{r.out}</td>
-                <td className="p-4">{r.due}</td>
-                <td className="p-4">
-                  <span className={[
-                    "rounded-full px-3 py-1 text-xs font-semibold",
-                    r.status === "Overdue" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"
-                  ].join(" ")}>
-                    {r.status}
-                  </span>
-                </td>
+            {rows.map((r) => (
+              <tr key={r.loan_id} className="border-t">
+                <td className="py-2 font-mono">{r.loan_id.slice(0, 8)}…</td>
+                <td className="py-2 font-mono">{r.user_id}</td>
+                <td className="py-2 font-mono">{r.tool_item_id}</td>
+                <td className="py-2">{r.issued_at}</td>
+                <td className="py-2">{r.due_at}</td>
+                <td className="py-2">{r.status}</td>
               </tr>
             ))}
-            {rows.length === 0 && (
-              <tr><td className="p-6 text-slate-500" colSpan={6}>No data.</td></tr>
-            )}
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="py-6 text-slate-500">No active loans.</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>

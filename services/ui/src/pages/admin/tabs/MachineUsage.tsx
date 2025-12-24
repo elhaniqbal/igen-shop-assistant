@@ -1,67 +1,62 @@
 import { useEffect, useState } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { getAdminSummary, getWeeklyDispenses, getCategoryUsage } from "../../../lib/api";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts";
+import { apiAdmin, type UsagePoint } from "../../../lib/api.admin";
+
+function msg(e: any) {
+  return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
+}
 
 export default function MachineUsage() {
-  const [summary, setSummary] = useState<any>(null);
-  const [weekly, setWeekly] = useState<any[]>([]);
-  const [cats, setCats] = useState<any[]>([]);
+  const [days, setDays] = useState(14);
+  const [rows, setRows] = useState<UsagePoint[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = async (d: number) => {
+    try {
+      setErr(null);
+      setRows(await apiAdmin.usage(d));
+    } catch (e: any) {
+      setErr(msg(e));
+    }
+  };
 
   useEffect(() => {
-    (async () => {
-      setSummary(await getAdminSummary());
-      setWeekly(await getWeeklyDispenses());
-      setCats(await getCategoryUsage());
-    })();
-  }, []);
-
-  const card = (title: string, value: string | number) => (
-    <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-sm">
-      <div className="text-slate-600 text-sm">{title}</div>
-      <div className="text-2xl font-semibold mt-2">{value}</div>
-    </div>
-  );
+    load(days);
+  }, [days]);
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {card("Total Monthly Dispenses", summary?.monthly_dispenses ?? "—")}
-        {card("Active Users", summary?.active_users ?? "—")}
-        {card("Avg. Checkout Duration", summary ? `${summary.avg_checkout_hours}h` : "—")}
-        {card("Current Checked Out", summary?.checked_out_now ?? "—")}
+    <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-semibold">Machine Usage</div>
+          <div className="text-sm text-slate-600 mt-1">Succeeded dispense/return events per day</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <select className="rounded-xl border px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {[7, 14, 30, 90].map((d) => (
+              <option key={d} value={d}>
+                Last {d} days
+              </option>
+            ))}
+          </select>
+          <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={() => load(days)}>
+            Refresh
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-sm">
-          <div className="font-semibold">Weekly Tool Dispenses</div>
-          <div className="h-64 mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={weekly}>
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="count" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      {err ? <div className="mt-4 rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
 
-        <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-sm">
-          <div className="font-semibold">Usage by Category</div>
-          <div className="h-64 mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={cats} dataKey="pct" nameKey="category" outerRadius={90} label />
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mt-3 text-sm text-slate-600">
-            {cats.map((c) => (
-              <div key={c.category}>{c.category}: {c.pct}%</div>
-            ))}
-          </div>
-        </div>
+      <div className="h-72 mt-5">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows}>
+            <XAxis dataKey="day" tick={{ fontSize: 12 }} />
+            <YAxis tick={{ fontSize: 12 }} />
+            <Tooltip />
+            <Bar dataKey="dispenses" />
+            <Bar dataKey="returns" />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );

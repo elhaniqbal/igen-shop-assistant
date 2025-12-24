@@ -12,6 +12,11 @@ from .routers.admin import router as admin_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    try:
+        from .db_migrations import ensure_tool_model_policy_columns
+        ensure_tool_model_policy_columns()
+    except Exception as e:
+        print(f"[MIGRATIONS] failed: {e!r}")
 
     app.state.mqtt = MqttBus()
     app.state.mqtt.start()
