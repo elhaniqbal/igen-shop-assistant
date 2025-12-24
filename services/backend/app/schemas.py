@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 from typing import Optional, List, Literal
 from datetime import datetime
+
+
 class TOPIC_CMD_ADMIN_TEST(BaseModel):
     request_id: str
     motor_id: str

@@ -6,6 +6,6 @@ ENV PYTHONUNBUFFERED=1
 
 RUN pip install --no-cache-dir paho-mqtt pyserial
 
-COPY bridge.py ./bridge.py
+COPY app/bridge.py .
 
-CMD ["python", "bridge.py"]
+CMD ["python", "./bridge.py"]

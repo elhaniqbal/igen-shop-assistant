@@ -25,9 +25,11 @@ services:
     restart: no # change in production
     expose:
       - "8000"
+    ports:
+      - "5000:8000"
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - MQTT_BROKER=${MQTT_BROKER} # if inside docker mqtt, localhost otherwise
+      - MQTT_BROKER=mqtt # if inside docker mqtt, localhost otherwise
       - MQTT_PORT=1883
       - PYTHONUNBUFFERED=1
     volumes:
@@ -43,8 +45,7 @@ services:
         condition: service_started
       bridge:
         condition: service_started
-      rfid:
-        condition: service_started
+     
     networks:
       - internal
 

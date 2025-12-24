@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from sqlalchemy.orm import Session
 from .deps import get_db, get_mqtt
 from .. import schemas
@@ -30,7 +30,7 @@ def _get_motor_test_status(request_id: str) -> dict | None:
         return _MOTOR_TEST.get(request_id)
 
 @router.post("/test/motor", response_model=schemas.AdminMotorTestResp)
-def test_motor(body: schemas.AdminMotorTestReq):
+def test_motor(body: schemas.AdminMotorTestReq, request: Request):
     request_id = uuid.uuid4().hex
 
     _set_motor_test_status(request_id, {
@@ -42,12 +42,12 @@ def test_motor(body: schemas.AdminMotorTestReq):
         "error_reason": None,
     })
 
-    mqtt = MqttBus(Depends(get_mqtt))
+    mqtt = request.app.state.mqtt
     if not mqtt:
         _set_motor_test_status(request_id, {"stage": "failed", "error_code": "MQTT_NOT_READY", "error_reason": "mqtt bus not ready"})
         raise HTTPException(status_code=503, detail="MQTT not ready")
 
-    mqtt.publish(schemas.TOPIC_CMD_ADMIN_TEST, {
+    mqtt.publish("igen/cmd/admin_test/motor", {
         "request_id": request_id,
         "motor_id": body.motor_id,
         "action": body.action,

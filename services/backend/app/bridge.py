@@ -10,9 +10,11 @@
 #   Subscribes:
 #     igen/cmd/dispense
 #     igen/cmd/return
+#     igen/cmd/admin_test/motor
 #   Publishes:
 #     igen/evt/dispense
 #     igen/evt/return
+#     igen/evt/admin_test/motor
 #
 # Serial protocol (Bridge -> ESP32):
 #   DISPENSE <request_id> <slot_id>\n
@@ -28,6 +30,10 @@
 # Timeouts:
 #   - ACK_TIMEOUT_MS: must receive ACK within this time
 #   - DONE_TIMEOUT_MS: must receive OK/FAIL within this time
+#
+# De-dupe:
+#   - MQTT QoS1 is "at least once" => duplicates can happen
+#   - We de-dupe by request_id for a TTL window
 
 from __future__ import annotations
 
@@ -37,12 +43,12 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Any
 
 import paho.mqtt.client as mqtt
 
 try:
-    import serial  
+    import serial
 except Exception:
     serial = None
 
@@ -62,6 +68,11 @@ SIM_FAIL_RATE = float(os.getenv("SIM_FAIL_RATE", "0.08"))
 SIM_MIN_TIME_S = float(os.getenv("SIM_MIN_TIME_S", "0.4"))
 SIM_MAX_TIME_S = float(os.getenv("SIM_MAX_TIME_S", "1.5"))
 SIM_ACK_DELAY_S = float(os.getenv("SIM_ACK_DELAY_S", "0.05"))
+
+# De-dupe TTL (seconds). If same request_id arrives again within this window, ignore.
+DEDUP_TTL_S = float(os.getenv("DEDUP_TTL_S", "120"))
+# Optionally ignore retained messages (useful if something was published retained by mistake)
+IGNORE_RETAINED = os.getenv("IGNORE_RETAINED", "0") == "1"
 
 TOPIC_CMD_DISPENSE = "igen/cmd/dispense"
 TOPIC_CMD_RETURN = "igen/cmd/return"
@@ -83,7 +94,7 @@ class BridgeConfig:
 
 @dataclass
 class Pending:
-    action: str  # "dispense" | "return"
+    action: str  # "dispense" | "return" | "admin_test"
     acked: bool = False
     ack_timer: Optional[threading.Timer] = None
     done_timer: Optional[threading.Timer] = None
@@ -98,6 +109,23 @@ def cmd(topic: str) -> Callable[[CmdHandler], CmdHandler]:
     def deco(fn: CmdHandler) -> CmdHandler:
         Bridge.CMD_HANDLERS[topic] = fn
         return fn
+    return deco
+
+
+def dedup_cmd(key_field: str = "request_id") -> Callable[[CmdHandler], CmdHandler]:
+    """
+    Decorator: de-dupe command handlers by a key (default request_id).
+    QoS1 can deliver duplicates; this prevents double execution.
+    """
+    def deco(fn: CmdHandler) -> CmdHandler:
+        def wrapped(self: "Bridge", payload: dict):
+            key = payload.get(key_field)
+            if isinstance(key, str) and key:
+                if self._dedup_seen(key):
+                    print(f"[BRIDGE] DUP ignored handler={fn.__name__} {key_field}={key}")
+                    return
+            return fn(self, payload)
+        return wrapped  # type: ignore
     return deco
 
 
@@ -119,11 +147,31 @@ class Bridge:
         self._pending: Dict[str, Pending] = {}
         self._lock = threading.Lock()
 
+        # request_id -> last_seen_monotonic
+        self._seen: Dict[str, float] = {}
+        self._seen_lock = threading.Lock()
+
         self._evt_topic = lambda action: (
             TOPIC_EVT_ADMIN_TEST if action == "admin_test"
             else (TOPIC_EVT_DISPENSE if action == "dispense" else TOPIC_EVT_RETURN)
         )
         self._ts = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # ---- de-dupe helpers ----
+    def _dedup_seen(self, request_id: str) -> bool:
+        now = time.monotonic()
+        with self._seen_lock:
+            # prune occasionally to keep dict small
+            if len(self._seen) > 2000:
+                expired = [rid for rid, ts in self._seen.items() if (now - ts) > DEDUP_TTL_S]
+                for rid in expired:
+                    self._seen.pop(rid, None)
+
+            ts = self._seen.get(request_id)
+            if ts is not None and (now - ts) <= DEDUP_TTL_S:
+                return True
+            self._seen[request_id] = now
+            return False
 
     # ---- lifecycle ----
     def connect(self):
@@ -135,7 +183,6 @@ class Bridge:
         if self.cfg.mode == "SERIAL":
             if serial is None:
                 raise RuntimeError("pyserial not installed; pip install pyserial")
-
             self.ser = serial.Serial(self.cfg.serial_port, self.cfg.serial_baud, timeout=0.2)
             print(f"[BRIDGE] Serial opened {self.cfg.serial_port} @ {self.cfg.serial_baud}")
             self._start_serial_reader()
@@ -162,11 +209,16 @@ class Bridge:
             print(f"[BRIDGE] MQTT connect failed rc={reason_code}")
             return
 
-        print("[BRIDGE] MQTT subscribe OK")
-        for t in self.CMD_HANDLERS.keys():
+        topics = list(self.CMD_HANDLERS.keys())
+        print(f"[BRIDGE] MQTT subscribe OK topics={topics}")
+        for t in topics:
             client.subscribe(t, qos=1)
 
     def _on_message(self, client, userdata, msg):
+        if IGNORE_RETAINED and getattr(msg, "retain", False):
+            print(f"[BRIDGE] Ignoring retained msg on {msg.topic}")
+            return
+
         raw = msg.payload.decode("utf-8", errors="replace")
         try:
             payload = json.loads(raw)
@@ -311,7 +363,15 @@ class Bridge:
 
         # final states
         if tag in ("DISPENSE_OK", "DISPENSE_FAIL", "RETURN_OK", "RETURN_FAIL"):
-            self._finish_pending(rid)
+            action = self._finish_pending(rid)
+
+            # If this was an admin_test pending item, finish on admin_test topic
+            if action == "admin_test":
+                if tag.endswith("_OK"):
+                    self._publish_stage("admin_test", rid, "succeeded")
+                else:
+                    self._publish_stage("admin_test", rid, "failed", err or "UNKNOWN", "hardware reported failure")
+                return
 
         if tag == "DISPENSE_OK":
             self._publish_stage("dispense", rid, "succeeded")
@@ -328,7 +388,6 @@ class Bridge:
             time.sleep(SIM_ACK_DELAY_S)
             self._handle_serial_line(f"ACK {request_id}")
 
-            # deterministic-ish cycle time: stable per request_id
             base = SIM_MIN_TIME_S + (abs(hash(request_id)) % 1000) / 1000.0 * (SIM_MAX_TIME_S - SIM_MIN_TIME_S)
             time.sleep(base)
 
@@ -344,6 +403,7 @@ class Bridge:
 
 # ---------- MQTT COMMAND HANDLERS ----------
 @cmd(TOPIC_CMD_DISPENSE)
+@dedup_cmd("request_id")
 def handle_dispense(self: Bridge, payload: dict):
     rid = payload.get("request_id")
     slot_id = payload.get("slot_id")  # keep slot_id as the serial argument
@@ -361,6 +421,7 @@ def handle_dispense(self: Bridge, payload: dict):
 
 
 @cmd(TOPIC_CMD_RETURN)
+@dedup_cmd("request_id")
 def handle_return(self: Bridge, payload: dict):
     rid = payload.get("request_id")
     slot_id = payload.get("slot_id")
@@ -376,18 +437,19 @@ def handle_return(self: Bridge, payload: dict):
     else:
         self._serial_send(f"RETURN {rid} {slot_id}\n")
 
+
 @cmd(TOPIC_CMD_ADMIN_TEST)
+@dedup_cmd("request_id")
 def handle_admin_test(self: Bridge, payload: dict):
     rid = payload.get("request_id")
     motor_id = payload.get("motor_id")
     action = payload.get("action")  # "dispense" | "return"
 
-    # For now: endpoint is same, future: motor_id affects which node/slot mapping you hit
     if not rid or motor_id is None or action not in ("dispense", "return"):
         print("[BRIDGE] admin_test cmd missing request_id/motor_id/action")
         return
 
-    # Publish accepted on the admin test event topic
+    # Accepted on the admin test topic
     self._publish(TOPIC_EVT_ADMIN_TEST, {
         "request_id": rid,
         "motor_id": int(motor_id),
@@ -398,14 +460,15 @@ def handle_admin_test(self: Bridge, payload: dict):
         "ts": self._ts(),
     })
 
-    # Start timers keyed by rid; label action="admin_test" so events go to admin test topic
+    # Start timers keyed by rid; action="admin_test" routes stage events to admin test topic
     self._start_pending("admin_test", rid)
 
     if self.cfg.mode == "SIM":
-        # simulate uses self._handle_serial_line which publishes dispense/return topics.
-        # For admin tests we want admin_test topic events, so simulate manually:
+        # IMPORTANT: simulate ACK properly by calling _mark_acked() to cancel ACK timer
         def run():
             time.sleep(SIM_ACK_DELAY_S)
+
+            self._mark_acked(rid)
             self._publish(TOPIC_EVT_ADMIN_TEST, {
                 "request_id": rid,
                 "motor_id": int(motor_id),
@@ -420,8 +483,9 @@ def handle_admin_test(self: Bridge, payload: dict):
             time.sleep(base)
 
             ok = random.random() >= SIM_FAIL_RATE
+            self._finish_pending(rid)
+
             if ok:
-                self._finish_pending(rid)
                 self._publish(TOPIC_EVT_ADMIN_TEST, {
                     "request_id": rid,
                     "motor_id": int(motor_id),
@@ -432,7 +496,6 @@ def handle_admin_test(self: Bridge, payload: dict):
                     "ts": self._ts(),
                 })
             else:
-                self._finish_pending(rid)
                 err = random.choice(["JAM_GANTRY", "ENC_MISMATCH", "SENSOR_FAIL", "BUSY"])
                 self._publish(TOPIC_EVT_ADMIN_TEST, {
                     "request_id": rid,
@@ -447,6 +510,7 @@ def handle_admin_test(self: Bridge, payload: dict):
         threading.Thread(target=run, daemon=True).start()
         return
 
+    # SERIAL: we still send DISPENSE/RETURN tags, but completion will be routed to admin_test topic
     cmd = "DISPENSE" if action == "dispense" else "RETURN"
     self._serial_send(f"{cmd} {rid} {int(motor_id)}\n")
 
