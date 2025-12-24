@@ -1,0 +1,5 @@
+How to run Firmware Logic Tests
+1. Navigate to firmware-tests folder
+2. Compile the test program and create executable by running g++ -std=c++17 dispense_wheel_logic.cpp test_dispense_wheel.cpp -o test_dispense
+3. Run ./test_dispense
+4. Inspect results in terminal
