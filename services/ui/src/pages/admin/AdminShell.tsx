@@ -6,8 +6,9 @@ import OverdueTools from "./tabs/OverdueTools";
 import Inventory from "./tabs/Inventory";
 import Users from "./tabs/Users";
 import TestTab from "./tabs/TestTab";
+import Cakes from "./tabs/Cakes";
 
-type Tab = "usage" | "checked" | "overdue" | "inventory" | "users" | "tests";
+type Tab = "usage" | "checked" | "overdue" | "inventory" | "users" | "tests" | "cakes";
 
 export default function AdminShell({
   session,
@@ -65,6 +66,7 @@ export default function AdminShell({
           <TabBtn id="inventory" label="Inventory" />
           <TabBtn id="users" label="Users" />
           <TabBtn id="tests" label="Hardware Tests" />
+          <TabBtn id="cakes" label="Cakes" />
         </div>
 
         <div className="mt-6">
@@ -74,6 +76,7 @@ export default function AdminShell({
           {tab === "inventory" && <Inventory />}
           {tab === "users" && <Users />}
           {tab === "tests" && <TestTab />}
+          {tab === "cakes" && <Cakes />}
         </div>
       </div>
     </div>

@@ -67,7 +67,6 @@ def list_users(db: Session, search: Optional[str], role: Optional[str], status: 
 def create_user(db: Session, body: AdminUserCreate):
     data = body.model_dump()
 
-    # generate user_id if missing
     if not data.get("user_id"):
         data["user_id"] = uuid.uuid4().hex
 
@@ -131,7 +130,6 @@ def list_tool_models(db: Session, search: Optional[str], category: Optional[str]
 def create_tool_model(db: Session, body: AdminToolModelCreate):
     data = body.model_dump()
 
-    # generate tool_model_id if missing
     if not data.get("tool_model_id"):
         data["tool_model_id"] = uuid.uuid4().hex
 
@@ -194,7 +192,6 @@ def list_tool_items(db: Session, tool_model_id: Optional[str], cake_id: Optional
 def create_tool_item(db: Session, body: AdminToolItemCreate):
     data = body.model_dump()
 
-    # generate tool_item_id if missing
     if not data.get("tool_item_id"):
         data["tool_item_id"] = uuid.uuid4().hex
 
@@ -204,7 +201,6 @@ def create_tool_item(db: Session, body: AdminToolItemCreate):
     if not db.get(models.ToolModel, data["tool_model_id"]):
         raise HTTPException(status_code=400, detail="invalid_tool_model_id")
 
-    # tool_tag_id required by DB; schema enforces str
     ex_tag = db.execute(select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])).scalar_one_or_none()
     if ex_tag:
         _conflict("tool_tag_id_already_in_use")
@@ -258,6 +254,37 @@ def delete_tool_item(db: Session, tool_item_id: str):
     db.commit()
     return {"ok": True}
 
+# NEW: drop an UNCONFIRMED checked-out item from inventory
+def drop_unconfirmed_tool_item(db: Session, tool_item_id: str):
+    ti = get_tool_item(db, tool_item_id)
+
+    loan = db.execute(
+        select(models.Loan).where(
+            models.Loan.tool_item_id == tool_item_id,
+            models.Loan.returned_at.is_(None),
+        ).order_by(models.Loan.issued_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+    if not loan:
+        _conflict("tool_item_has_no_open_loan")
+
+    if loan.status != "unconfirmed":
+        _conflict("only_unconfirmed_can_be_dropped")
+
+    # Cancel the unconfirmed loan so it no longer removes stock
+    loan.returned_at = utcnow()
+    loan.status = "canceled"
+
+    # Soft-remove tool item from inventory (inventory query filters is_active=1)
+    ti.is_active = False
+    ti.updated_at = utcnow()
+
+    log_event(db, "admin_unconfirmed_loan_canceled", payload={"loan_id": loan.loan_id, "tool_item_id": tool_item_id}, tool_item_id=tool_item_id)
+    log_event(db, "admin_tool_item_deactivated", payload={"tool_item_id": tool_item_id, "reason": "dropped_unconfirmed"}, tool_item_id=tool_item_id)
+
+    db.commit()
+    return {"ok": True, "tool_item_id": tool_item_id, "loan_id": loan.loan_id, "status": "canceled", "item_is_active": False}
+
 # ---------------- LOANS (admin view + force patch) ----------------
 def list_loans(db: Session, active_only: bool, overdue_only: bool, user_id: Optional[str], tool_item_id: Optional[str], limit: int):
     q = select(models.Loan)
@@ -288,6 +315,38 @@ def patch_loan(db: Session, loan_id: str, body: AdminLoanPatch):
     db.commit()
     db.refresh(loan)
     return loan
+
+# NEW: confirm an UNCONFIRMED loan (admin override)
+def admin_confirm_unconfirmed_loan(db: Session, loan_id: str):
+    loan = get_loan(db, loan_id)
+    if loan.returned_at is not None:
+        _conflict("loan_already_closed")
+    if loan.status != "unconfirmed":
+        _conflict("loan_not_unconfirmed")
+
+    loan.confirmed_at = utcnow()
+    loan.status = "active"
+
+    log_event(db, "admin_loan_confirmed", payload={"loan_id": loan_id}, tool_item_id=loan.tool_item_id)
+    db.commit()
+    db.refresh(loan)
+    return {"ok": True, "loan_id": loan_id, "status": loan.status, "confirmed_at": loan.confirmed_at.isoformat()}
+
+# NEW: cancel an UNCONFIRMED loan (free inventory without deleting item)
+def admin_cancel_unconfirmed_loan(db: Session, loan_id: str):
+    loan = get_loan(db, loan_id)
+    if loan.returned_at is not None:
+        _conflict("loan_already_closed")
+    if loan.status != "unconfirmed":
+        _conflict("loan_not_unconfirmed")
+
+    loan.returned_at = utcnow()
+    loan.status = "canceled"
+
+    log_event(db, "admin_unconfirmed_loan_canceled", payload={"loan_id": loan_id}, tool_item_id=loan.tool_item_id)
+    db.commit()
+    db.refresh(loan)
+    return {"ok": True, "loan_id": loan_id, "status": loan.status, "returned_at": loan.returned_at.isoformat()}
 
 # ---------------- EVENTS (read-only) ----------------
 def list_events(db: Session, event_type: Optional[str], actor_id: Optional[str], request_id: Optional[str], tool_item_id: Optional[str], limit: int):

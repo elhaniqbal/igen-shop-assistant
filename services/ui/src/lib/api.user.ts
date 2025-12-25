@@ -45,13 +45,24 @@ export type DispenseConfirmResp = { ok: boolean; loan_id?: string; tool_item_id?
 
 export type LoanRow = {
   loan_id: string;
+
   tool_item_id: string;
+
+  // NEW (for UI)
+  tool_model_id: string;
+  tool_name: string;
+  tool_category?: string | null;
+
+  // NEW (for return validation; do NOT display)
+  tool_tag_id: string;
+
   issued_at: string;
   due_at: string;
   confirmed_at?: string | null;
   returned_at?: string | null;
   status: string;
 };
+
 export type LoansResp = { user_id: string; loans: LoanRow[] };
 
 export type ReturnItemReq = { tool_item_id: string };

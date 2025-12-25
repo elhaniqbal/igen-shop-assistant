@@ -13,7 +13,7 @@ export type User = {
 };
 
 export type AdminUserCreate = {
-  user_id?: string | null; // optional now
+  user_id?: string | null;
   card_id?: string | null;
   student_number?: string | null;
   first_name?: string;
@@ -29,24 +29,20 @@ export type ToolModel = {
   description?: string | null;
   category?: string | null;
 
-  // NEW:
-  // If null/undefined => no limit (server default policy)
-  max_loan_hours?: number | null;      // e.g. 8, 24, 72
-  max_qty_per_user?: number | null;    // e.g. 1, 2, 5
-};
-
-export type AdminToolModelCreate = {
-  tool_model_id?: string | null; // optional now
-  name: string;
-  description?: string | null;
-  category?: string | null;
-
-  // NEW:
   max_loan_hours?: number | null;
   max_qty_per_user?: number | null;
 };
 
-// safer patch type (don’t allow tool_model_id to be patched)
+export type AdminToolModelCreate = {
+  tool_model_id?: string | null;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+
+  max_loan_hours?: number | null;
+  max_qty_per_user?: number | null;
+};
+
 export type ToolModelPatch = Partial<Omit<ToolModel, "tool_model_id">>;
 
 export type ToolItem = {
@@ -60,9 +56,9 @@ export type ToolItem = {
 };
 
 export type AdminToolItemCreate = {
-  tool_item_id?: string | null; // optional now
+  tool_item_id?: string | null;
   tool_model_id: string;
-  tool_tag_id: string; // REQUIRED (DB NOT NULL)
+  tool_tag_id: string;
   cake_id: string;
   slot_id: string;
   condition_status: "ok" | "worn" | "damaged" | "missing_parts";
@@ -103,12 +99,38 @@ export type UsagePoint = { day: string; dispenses: number; returns: number };
 
 export type MotorAction = "dispense" | "return";
 export type MotorTestReq = { motor_id: number; action: MotorAction };
-export type MotorTestStartResp = { request_id: string };
+export type MotorTestStartResp = { request_id: string; motor_id: number; action: MotorAction };
+export type LoanPatch = Partial<Pick<LoanOut, "due_at" | "status" | "confirmed_at" | "returned_at">>;
 export type MotorTestStatusResp = {
   request_id: string;
   stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed";
   error_code?: string | null;
   error?: string | null;
+};
+
+// Hardware console
+export type HardwareCmdResp = {
+  ok: boolean;
+  request_id: string;
+  cake_id: number;
+  command: string;
+  eeprom: any | null;
+};
+export type ReadEepromResp = {
+  ok: boolean;
+  cake_id: number;
+  // for now blank; later you can populate from headers/body
+  eeprom: any | null;
+  headers?: Record<string, string>;
+};
+
+export type CakeHomeStartResp = { ok: boolean; request_id: string; cake_id: number };
+export type CakeHomeStatusResp = {
+  request_id: string;
+  cake_id: number;
+  stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed";
+  error_code?: string | null;
+  error_reason?: string | null;
 };
 
 // ---------------- API ----------------
@@ -125,7 +147,7 @@ export const apiAdmin = {
   },
 
   createUser: (u: AdminUserCreate) => http<User>(EP.adminUsers, { method: "POST", json: u }),
-  updateUser: (userId: string, patch: Partial<User>) => http<User>(EP.adminUser(userId), { method: "PATCH", json: patch }),
+  patchUser: (userId: string, patch: Partial<User>) => http<User>(EP.adminUser(userId), { method: "PATCH", json: patch }),
   deleteUser: (userId: string) => http<{ ok: boolean }>(EP.adminUser(userId), { method: "DELETE" }),
 
   // Tool models CRUD
@@ -139,11 +161,8 @@ export const apiAdmin = {
   },
 
   createToolModel: (m: AdminToolModelCreate) => http<ToolModel>(EP.adminToolModels, { method: "POST", json: m }),
-
-  // UPDATED patch type so you can patch max_loan_hours/max_qty_per_user cleanly
   patchToolModel: (id: string, patch: ToolModelPatch) =>
     http<ToolModel>(EP.adminToolModel(id), { method: "PATCH", json: patch }),
-
   deleteToolModel: (id: string) => http<{ ok: boolean }>(EP.adminToolModel(id), { method: "DELETE" }),
 
   // Tool items CRUD
@@ -162,6 +181,9 @@ export const apiAdmin = {
   patchToolItem: (id: string, patch: Partial<ToolItem>) => http<ToolItem>(EP.adminToolItem(id), { method: "PATCH", json: patch }),
   deleteToolItem: (id: string) => http<{ ok: boolean }>(EP.adminToolItem(id), { method: "DELETE" }),
 
+  // Inventory
+  inventory: () => http<InventoryRow[]>(EP.adminInventory),
+
   // loans
   listLoans: (params?: {
     active_only?: boolean;
@@ -179,6 +201,21 @@ export const apiAdmin = {
     const qs = q.toString();
     return http<LoanOut[]>(`${EP.adminLoans}${qs ? `?${qs}` : ""}`);
   },
+
+  patchLoan: (loanId: string, patch: LoanPatch) =>
+    http<LoanOut>(EP.adminLoan(loanId), { method: "PATCH", json: patch }),
+
+  // NEW: confirm unconfirmed loan (admin override)
+  confirmLoan: (loanId: string) =>
+    http<{ ok: boolean; loan_id: string; status: string; confirmed_at: string }>(`/admin/loans/${loanId}/confirm`, { method: "POST" }),
+
+  // NEW: cancel unconfirmed loan (free inventory)
+  cancelUnconfirmedLoan: (loanId: string) =>
+    http<{ ok: boolean; loan_id: string; status: string; returned_at: string }>(`/admin/loans/${loanId}/cancel-unconfirmed`, { method: "POST" }),
+
+  // NEW: drop unconfirmed tool item from inventory (soft delete + cancel loan)
+  dropUnconfirmedToolItem: (toolItemId: string) =>
+    http<{ ok: boolean; tool_item_id: string; loan_id: string; status: string; item_is_active: boolean }>(`/admin/tool-items/${toolItemId}/drop-unconfirmed`, { method: "POST" }),
 
   // events
   listEvents: (params?: {
@@ -212,10 +249,52 @@ export const apiAdmin = {
     }),
 
   // metrics
-  usage: () => http<UsagePoint[]>(EP.adminUsage),
-  inventory: () => http<InventoryRow[]>(EP.adminInventory),
+  usage: (days: number) => {
+    const q = new URLSearchParams();
+    q.set("days", String(days));
+    return http<UsagePoint[]>(`${EP.adminUsage}?${q.toString()}`);
+  },
 
   // motor test
   motorTestStart: (req: MotorTestReq) => http<MotorTestStartResp>(EP.adminMotorTestStart, { method: "POST", json: req }),
   motorTestStatus: (requestId: string) => http<MotorTestStatusResp>(EP.adminMotorTestStatus(requestId)),
+
+  // NEW: Hardware command console
+  hardwareCommand: (cakeId: number, command: string, args?: Record<string, any>) =>
+    http<HardwareCmdResp>(`/admin/hardware/cakes/${cakeId}/cmd`, { method: "POST", json: { command, args: args ?? {} } }),
+
+  readCakeEeprom: async (cakeId: number) => {
+    // placeholder endpoint; you can change path later
+    const res = await fetch(`/admin/cakes/${cakeId}/eeprom`, { method: "GET" });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t || "read eeprom failed");
+    }
+
+    // Later: you said you’ll return EEPROM in request headers.
+    // This collects them so the modal can display them.
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => (headers[k] = v));
+
+    // if you later return JSON body too, this will work
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+
+    return {
+      ok: true,
+      cake_id: cakeId,
+      eeprom: body?.eeprom ?? null,
+      headers,
+    } satisfies ReadEepromResp;
+  },
+
+  cakeSetHome: (cakeId: number) =>
+    http<CakeHomeStartResp>(`/admin/cakes/${cakeId}/home`, { method: "POST" }),
+
+  cakeSetHomeStatus: (requestId: string) =>
+    http<CakeHomeStatusResp>(`/admin/cakes/home/${requestId}/status`),
 };

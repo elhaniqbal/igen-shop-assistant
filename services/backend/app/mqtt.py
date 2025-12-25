@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timedelta
+
 import paho.mqtt.client as mqtt
 from sqlalchemy import select
 
 from .utils import with_db, mqtt_topic, dispatch_mqtt
 from . import models
-from .usecases.hw_events import apply_dispense_event, apply_return_event
-
 from .motor_test_store import set_motor_test_status
 
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt")
@@ -24,6 +24,10 @@ SUB_TOPICS = [
     "igen/evt/system/status",
     "igen/evt/admin_test/motor",
 ]
+
+
+def _now() -> datetime:
+    return datetime.now()
 
 
 class MqttBus:
@@ -75,11 +79,10 @@ class MqttBus:
 
 @with_db
 def _handle_mqtt_message(db, topic: str, payload: dict):
-    # Always log raw MQTT events (including admin test)
+    # log raw MQTT
     db.add(models.Event(event_type=f"mqtt:{topic}", payload_json=json.dumps(payload)))
     db.commit()
 
-    # Dispatch to topic-specific handler if registered
     dispatch_mqtt(db, topic, payload)
 
 
@@ -87,9 +90,6 @@ def _handle_mqtt_message(db, topic: str, payload: dict):
 
 @mqtt_topic("igen/evt/admin_test/motor")
 def handle_evt_admin_test_motor(db, payload: dict):
-    """
-    Updates the in-memory motor test store that /admin/test/motor/{rid}/status returns.
-    """
     request_id = payload.get("request_id")
     stage = payload.get("stage")
     if not request_id or not stage:
@@ -117,6 +117,7 @@ def handle_evt_dispense(db, payload: dict):
     if not req:
         return
 
+    # map hw stages
     if stage == "accepted":
         req.hw_status = "accepted"
     elif stage == "in_progress":
@@ -128,8 +129,45 @@ def handle_evt_dispense(db, payload: dict):
         req.hw_error_code = payload.get("error_code")
         req.hw_error_reason = payload.get("error_reason")
 
-    req.hw_updated_at = models.utcnow() if hasattr(models, "utcnow") else None
+    req.hw_updated_at = _now()
     db.commit()
+
+    # CRITICAL: on successful dispense, immediately create an UNCONFIRMED loan
+    # so inventory drops even if user never confirms.
+    if stage == "succeeded":
+        # If a loan already exists for this request/tool and is open, don't duplicate.
+        existing_loan = db.execute(
+            select(models.Loan).where(
+                models.Loan.user_id == req.user_id,
+                models.Loan.tool_item_id == req.tool_item_id,
+                models.Loan.returned_at.is_(None),
+            ).order_by(models.Loan.issued_at.desc())
+        ).scalar_one_or_none()
+
+        if not existing_loan:
+            hours = req.loan_period_hours or 24
+            due_at = _now() + timedelta(hours=hours)
+            loan_id = models.new_id("loan")
+
+            db.add(models.Loan(
+                loan_id=loan_id,
+                user_id=req.user_id,
+                tool_item_id=req.tool_item_id,
+                issued_at=_now(),
+                due_at=due_at,
+                confirmed_at=None,
+                returned_at=None,
+                status="unconfirmed",
+            ))
+            db.add(models.Event(
+                event_type="loan:created_unconfirmed",
+                actor_type="system",
+                actor_id=req.user_id,
+                request_id=req.request_id,
+                tool_item_id=req.tool_item_id,
+                payload_json=json.dumps({"reason": "dispensed_ok_requires_confirm"}),
+            ))
+            db.commit()
 
 
 @mqtt_topic("igen/evt/return")
@@ -145,8 +183,10 @@ def handle_evt_return(db, payload: dict):
 
     if stage == "succeeded":
         req.hw_status = "return_ok"
+        req.hw_updated_at = _now()
         db.commit()
 
+        # mark any open loan as returned (active/overdue/unconfirmed)
         loan = db.execute(
             select(models.Loan).where(
                 models.Loan.user_id == req.user_id,
@@ -155,14 +195,23 @@ def handle_evt_return(db, payload: dict):
             )
         ).scalar_one_or_none()
         if loan:
-            loan.returned_at = models.utcnow() if hasattr(models, "utcnow") else None
+            loan.returned_at = _now()
             loan.status = "returned"
+            db.add(models.Event(
+                event_type="loan:returned",
+                actor_type="system",
+                actor_id=req.user_id,
+                request_id=req.request_id,
+                tool_item_id=req.tool_item_id,
+                payload_json="{}",
+            ))
             db.commit()
 
     elif stage == "failed":
         req.hw_status = "failed"
         req.hw_error_code = payload.get("error_code")
         req.hw_error_reason = payload.get("error_reason")
+        req.hw_updated_at = _now()
         db.commit()
 
 
@@ -188,3 +237,20 @@ def handle_evt_fault(db, payload: dict):
 @mqtt_topic("igen/evt/system/status")
 def handle_evt_status(db, payload: dict):
     pass
+
+from .cake_cmd_store import set_cake_cmd_status  # NEW import
+
+@mqtt_topic("igen/evt/cake/home")
+def handle_evt_cake_home(db, payload: dict):
+    request_id = payload.get("request_id")
+    stage = payload.get("stage")
+    if not request_id or not stage:
+        return
+
+    set_cake_cmd_status(request_id, {
+        "request_id": request_id,
+        "cake_id": payload.get("cake_id"),
+        "stage": stage,
+        "error_code": payload.get("error_code"),
+        "error_reason": payload.get("error_reason"),
+    })

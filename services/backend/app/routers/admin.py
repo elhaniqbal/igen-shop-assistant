@@ -10,6 +10,8 @@ import uuid
 from datetime import timedelta
 
 from ..motor_test_store import set_motor_test_status, get_motor_test_status
+from ..cake_cmd_store import set_cake_cmd_status, get_cake_cmd_status
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -156,6 +158,12 @@ def delete_tool_item(tool_item_id: str, db: Session = Depends(get_db)):
     return uc.delete_tool_item(db, tool_item_id)
 
 
+# NEW: drop an UNCONFIRMED checked-out item from inventory (soft delete item + cancel unconfirmed loan)
+@router.post("/tool-items/{tool_item_id}/drop-unconfirmed")
+def drop_unconfirmed_tool_item(tool_item_id: str, db: Session = Depends(get_db)):
+    return uc.drop_unconfirmed_tool_item(db, tool_item_id)
+
+
 # ---------------- LOANS (admin) ----------------
 @router.get("/loans", response_model=list[schemas.LoanOut])
 def list_loans(
@@ -196,6 +204,104 @@ def extend_loan(loan_id: str, req: schemas.AdminExtendLoanReq, db: Session = Dep
     db.commit()
     return {"ok": True, "loan_id": loan_id, "due_at": loan.due_at.isoformat() + "Z"}
 
+@router.get("/cakes/{cake_id}/eeprom")
+def read_cake_eeprom(cake_id: int):
+    # later: return EEPROM in headers or body
+    return {"ok": True, "cake_id": cake_id, "eeprom": None}
+
+# NEW: confirm an UNCONFIRMED loan (admin override)
+@router.post("/loans/{loan_id}/confirm")
+def admin_confirm_loan(loan_id: str, db: Session = Depends(get_db)):
+    return uc.admin_confirm_unconfirmed_loan(db, loan_id)
+
+
+# NEW: cancel an UNCONFIRMED loan (free inventory)
+@router.post("/loans/{loan_id}/cancel-unconfirmed")
+def admin_cancel_unconfirmed_loan(loan_id: str, db: Session = Depends(get_db)):
+    return uc.admin_cancel_unconfirmed_loan(db, loan_id)
+
+
+# ---------------- HARDWARE STATUS / CONSOLE ----------------
+# NOTE: you said you will add topics + bridge support later. This is the API surface the frontend will call now.
+
+@router.post("/hardware/cakes/{cake_id}/cmd")
+def hardware_send_cmd(cake_id: int, body: dict, request: Request, db: Session = Depends(get_db)):
+    """
+    body = { "command": "zero" | "read_eeprom" | "burn_eeprom" | "status" | ... , "args": {...optional...} }
+    """
+    cmd = (body.get("command") or "").strip()
+    args = body.get("args") or {}
+    if not cmd:
+        raise HTTPException(400, "missing_command")
+
+    mqtt = request.app.state.mqtt
+    if not mqtt:
+        raise HTTPException(status_code=503, detail="MQTT not ready")
+
+    request_id = uuid.uuid4().hex
+
+    # log command as an event (so UI can show command history)
+    uc.log_event(
+        db,
+        "admin_hw_cmd",
+        actor_type="admin",
+        actor_id=None,
+        request_id=request_id,
+        tool_item_id=None,
+        payload={"cake_id": cake_id, "command": cmd, "args": args},
+    )
+    db.commit()
+
+    # publish command (you will implement these topics on the ESP32 side / bridge)
+    mqtt.publish(
+        "igen/cmd/hardware/cake",
+        {
+            "request_id": request_id,
+            "cake_id": cake_id,
+            "command": cmd,
+            "args": args,
+        },
+        qos=1,
+    )
+
+    # For now we return placeholder data; later you can return actual status/EEPROM from MQTT responses
+    return {"ok": True, "request_id": request_id, "cake_id": cake_id, "command": cmd, "eeprom": None}
+
+@router.post("/cakes/{cake_id}/home")
+def cake_set_home(cake_id: int, request: Request):
+    request_id = uuid.uuid4().hex
+
+    set_cake_cmd_status(request_id, {
+        "request_id": request_id,
+        "cake_id": cake_id,
+        "stage": "queued",
+        "error_code": None,
+        "error_reason": None,
+    })
+
+    mqtt = request.app.state.mqtt
+    if not mqtt:
+        set_cake_cmd_status(request_id, {
+            "stage": "failed",
+            "error_code": "MQTT_NOT_READY",
+            "error_reason": "mqtt bus not ready",
+        })
+        raise HTTPException(status_code=503, detail="MQTT not ready")
+
+    mqtt.publish("igen/cmd/cake/home", {
+        "request_id": request_id,
+        "cake_id": cake_id,
+    })
+
+    return {"ok": True, "request_id": request_id, "cake_id": cake_id}
+
+
+@router.get("/cakes/home/{request_id}/status")
+def cake_set_home_status(request_id: str):
+    st = get_cake_cmd_status(request_id)
+    if not st:
+        raise HTTPException(status_code=404, detail="unknown request_id")
+    return st
 
 # ---------------- EVENTS (read-only) ----------------
 @router.get("/events", response_model=list[schemas.EventOut])
@@ -250,17 +356,20 @@ def inventory(db: Session = Depends(get_db)):
       SELECT
         tm.tool_model_id AS tool_model_id,
         tm.name AS name,
-        COUNT(ti.tool_item_id) AS total,
-        SUM(CASE WHEN l.loan_id IS NULL THEN 1 ELSE 0 END) AS available,
-        SUM(CASE WHEN l.loan_id IS NOT NULL THEN 1 ELSE 0 END) AS checked_out
+        COALESCE(COUNT(ti.tool_item_id), 0) AS total,
+        COALESCE(SUM(CASE WHEN open_loan.tool_item_id IS NULL THEN 1 ELSE 0 END), 0) AS available,
+        COALESCE(SUM(CASE WHEN open_loan.tool_item_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS checked_out
       FROM tool_models tm
       LEFT JOIN tool_items ti
         ON ti.tool_model_id = tm.tool_model_id
        AND ti.is_active = 1
-      LEFT JOIN loans l
-        ON l.tool_item_id = ti.tool_item_id
-       AND l.returned_at IS NULL
-       AND l.status IN ('active','overdue')
+      LEFT JOIN (
+        SELECT tool_item_id
+        FROM loans
+        WHERE returned_at IS NULL
+        GROUP BY tool_item_id
+      ) open_loan
+        ON open_loan.tool_item_id = ti.tool_item_id
       GROUP BY tm.tool_model_id, tm.name
       ORDER BY tm.name ASC
     """)

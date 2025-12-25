@@ -1,6 +1,6 @@
 # backend/bridge/bridge.py
 #
-# MQTT <-> Serial Bridge for IGEN Shop Assistant
+# MQTT <-> Serial Bridge 
 #
 # Modes:
 #   BRIDGE_MODE=SERIAL  -> talks to real ESP32 over USB serial
@@ -80,6 +80,8 @@ TOPIC_EVT_DISPENSE = "igen/evt/dispense"
 TOPIC_EVT_RETURN = "igen/evt/return"
 TOPIC_CMD_ADMIN_TEST = "igen/cmd/admin_test/motor"
 TOPIC_EVT_ADMIN_TEST = "igen/evt/admin_test/motor"
+TOPIC_CMD_CAKE_HOME = "igen/cmd/cake/home"
+TOPIC_EVT_CAKE_HOME = "igen/evt/cake/home"
 
 
 # ---------- DATA ----------
@@ -153,6 +155,7 @@ class Bridge:
 
         self._evt_topic = lambda action: (
             TOPIC_EVT_ADMIN_TEST if action == "admin_test"
+            else TOPIC_EVT_CAKE_HOME if action == "cake_home"
             else (TOPIC_EVT_DISPENSE if action == "dispense" else TOPIC_EVT_RETURN)
         )
         self._ts = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -362,7 +365,7 @@ class Bridge:
             return
 
         # final states
-        if tag in ("DISPENSE_OK", "DISPENSE_FAIL", "RETURN_OK", "RETURN_FAIL"):
+        if tag in ("DISPENSE_OK", "DISPENSE_FAIL", "RETURN_OK", "RETURN_FAIL", "ZERO_OK", "ZERO_FAIL"):
             action = self._finish_pending(rid)
 
             # If this was an admin_test pending item, finish on admin_test topic
@@ -381,6 +384,12 @@ class Bridge:
             self._publish_stage("return", rid, "succeeded")
         elif tag == "RETURN_FAIL":
             self._publish_stage("return", rid, "failed", err or "UNKNOWN", "hardware reported failure")
+        elif tag == "ZERO_OK":
+            self._publish_stage("cake_home", rid, "succeeded")
+            return
+        elif tag == "ZERO_FAIL":
+            self._publish_stage("cake_home", rid, "failed", err or "UNKNOWN", "hardware reported failure")
+            return
 
     # ---- simulation ----
     def _simulate(self, action: str, request_id: str):
@@ -514,6 +523,31 @@ def handle_admin_test(self: Bridge, payload: dict):
     cmd = "DISPENSE" if action == "dispense" else "RETURN"
     self._serial_send(f"{cmd} {rid} {int(motor_id)}\n")
 
+@cmd(TOPIC_CMD_CAKE_HOME)
+@dedup_cmd("request_id")
+def handle_cake_home(self: Bridge, payload: dict):
+    rid = payload.get("request_id")
+    cake_id = payload.get("cake_id")
+
+    if not rid or cake_id is None:
+        print("[BRIDGE] cake_home cmd missing request_id/cake_id")
+        return
+
+    self._publish_stage("cake_home", rid, "accepted")
+    self._start_pending("cake_home", rid)
+
+    if self.cfg.mode == "SIM":
+        # simulate ack + ok
+        def run():
+            time.sleep(SIM_ACK_DELAY_S)
+            self._handle_serial_line(f"ACK {rid}")
+            time.sleep(0.4)
+            self._handle_serial_line(f"ZERO_OK {rid}")
+        threading.Thread(target=run, daemon=True).start()
+        return
+
+    # SERIAL: recommended contract:
+    self._serial_send(f"ZERO {rid} {int(cake_id)}\n")
 
 def main():
     cfg = BridgeConfig(

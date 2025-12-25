@@ -1,15 +1,21 @@
+from __future__ import annotations
+
 from sqlalchemy import String, Integer, Boolean, DateTime, Text, ForeignKey, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
+from uuid import uuid4
+
 from .db import Base
 
-import uuid
-
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex}"
 
 def utcnow():
     return datetime.now()
+
+
+def new_id(prefix: str) -> str:
+    # stable, short, collision-resistant enough for kiosk scale
+    return f"{prefix}_{uuid4().hex[:12]}"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -20,9 +26,11 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(String, default="")
     last_name: Mapped[str] = mapped_column(String, default="")
     role: Mapped[str] = mapped_column(String, default="student")   # student|staff|admin
-    status: Mapped[str] = mapped_column(String, default="good")  # good | delinquent | banned | whatever
+    # IMPORTANT: your system uses "good" widely; keep it and treat it as active/allowed
+    status: Mapped[str] = mapped_column(String, default="good")  # good|active|delinquent|banned
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 
 class ToolModel(Base):
     __tablename__ = "tool_models"
@@ -32,9 +40,10 @@ class ToolModel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str | None] = mapped_column(String, nullable=True)
 
- 
+    # optional policy fields
     max_loan_hours = Column(Integer, nullable=True)      # e.g. 2..720
     max_qty_per_user = Column(Integer, nullable=True)   # e.g. 1..50
+
 
 class ToolItem(Base):
     __tablename__ = "tool_items"
@@ -50,6 +59,7 @@ class ToolItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     model = relationship("ToolModel")
+
 
 class LoanRequest(Base):
     __tablename__ = "loan_requests"
@@ -70,6 +80,7 @@ class LoanRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     hw_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+
 class Loan(Base):
     __tablename__ = "loans"
 
@@ -81,7 +92,12 @@ class Loan(Base):
     due_at: Mapped[datetime] = mapped_column(DateTime)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="active")  # active|overdue|returned|lost|damaged
+
+    # IMPORTANT:
+    # - "unconfirmed" means hardware dispensed but user didn't confirm pickup yet.
+    # - still counts as "not in stock".
+    status: Mapped[str] = mapped_column(String, default="unconfirmed")  # unconfirmed|active|overdue|returned|lost|damaged
+
 
 class Event(Base):
     __tablename__ = "events"
