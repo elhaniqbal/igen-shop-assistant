@@ -127,25 +127,33 @@ export default function Inventory() {
   const viewItems: ItemRowView[] = useMemo(() => {
     return items.map((it) => {
       const loan = loanMap[it.tool_item_id];
-      if (!loan) {
-        return {
-          ...it,
-          loan_status: "AVAILABLE",
-          holder_name: "—",
-          due_at: null,
-          loan_id: null,
-          loan_state: null,
-        };
+      const isUnconfirmed = (loan?.status ?? "").toLowerCase() === "unconfirmed";
+
+      // Determine basic loan status
+      const loan_status: "AVAILABLE" | "CHECKED_OUT" = loan ? "CHECKED_OUT" : "AVAILABLE";
+
+      // Compute display status
+      let displayStatus: string;
+      if (!it.is_active) {
+        displayStatus = "NOT_AVAILABLE";
+      } else if (loan_status === "CHECKED_OUT" && isUnconfirmed) {
+        displayStatus = "CHECKED_OUT (UNCONFIRMED)";
+      } else {
+        displayStatus = loan_status;
       }
-      const u = userMap[loan.user_id];
-      const holder = u ? `${u.first_name} ${u.last_name}` : loan.user_id;
+
+      const holder_name = loan && it.is_active
+        ? `${userMap[loan.user_id]?.first_name ?? ""} ${userMap[loan.user_id]?.last_name ?? ""}`.trim() || loan.user_id
+        : "—";
+
       return {
         ...it,
-        loan_status: "CHECKED_OUT",
-        holder_name: holder,
-        due_at: loan.due_at,
-        loan_id: loan.loan_id,
-        loan_state: loan.status ?? null,
+        loan_status,
+        loan_state: loan?.status ?? null,
+        displayStatus,
+        holder_name,
+        due_at: loan?.due_at ?? null,
+        loan_id: loan?.loan_id ?? null,
       };
     });
   }, [items, loanMap, userMap]);
@@ -336,14 +344,12 @@ export default function Inventory() {
                       <span
                         className={[
                           "inline-flex rounded-full px-3 py-1 text-xs font-semibold",
-                          it.loan_status === "AVAILABLE"
+                          it.displayStatus === "AVAILABLE"
                             ? "bg-emerald-100 text-emerald-700"
-                            : isUnconfirmed
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-slate-100 text-slate-700",
+                            : "bg-slate-100 text-slate-700", // CHECKED_OUT, UNCONFIRMED, NOT_AVAILABLE all same style
                         ].join(" ")}
                       >
-                        {it.loan_status === "AVAILABLE" ? "AVAILABLE" : isUnconfirmed ? "CHECKED OUT (UNCONFIRMED)" : "CHECKED OUT"}
+                        {it.displayStatus === "NOT_AVAILABLE" ? "NOT_AVAILABLE" : it.displayStatus}
                       </span>
                     </td>
                     <td className="p-4">{it.holder_name}</td>
