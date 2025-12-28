@@ -4,7 +4,7 @@ import { EP } from "./endpoints";
 export type RfidKind = "card" | "tool";
 
 export type RfidSetModeReq = { reader_id: string; mode: RfidKind };
-export type RfidScan = { tag_id?: string; uid?: string; ts?: string; reader_id?: string };
+export type RfidScan = { card_id?: string; ts?: string; reader_id?: string };
 export type RfidConsumeResp = { ok: boolean; scan: RfidScan | null };
 
 export type CardAuthReq = { card_id: string };

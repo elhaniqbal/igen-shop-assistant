@@ -35,7 +35,7 @@ export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }
   };
 
   const onCardScan = async (scan: RfidScan) => {
-    const cardId = scan.tag_id ?? scan.uid;
+    const cardId = scan.card_id;
     if (!cardId) {
       setErr("Scan missing tag_id/uid");
       return;
