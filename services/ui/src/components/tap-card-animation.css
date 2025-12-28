@@ -1,0 +1,63 @@
+@keyframes cardTap {
+  0% {
+    transform: translateY(0) rotate(-15deg);
+  }
+  50% {
+    transform: translateY(120px) rotate(-5deg);
+  }
+  100% {
+    transform: translateY(0) rotate(-15deg);
+  }
+}
+
+@keyframes screenGlow {
+  0%, 100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes nfcActivate {
+  0%, 100% {
+    opacity: 0.5;
+    stroke: #64748b;
+  }
+  50% {
+    opacity: 1;
+    stroke: #3b82f6;
+  }
+}
+
+@keyframes signalWave {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  60% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+
+.card-tap {
+  animation: cardTap 2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.screen-glow {
+  animation: screenGlow 2s ease-in-out infinite;
+}
+
+.nfc-wave {
+  animation: nfcActivate 2s ease-in-out infinite;
+}
+
+.signal-wave {
+  animation: signalWave 1s ease-out infinite;
+  transform-origin: 200px 350px;
+}

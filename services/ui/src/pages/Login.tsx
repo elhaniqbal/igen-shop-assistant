@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { apiUser, type CardAuthResp, type RfidScan } from "../lib/api.user";
 import { RfidScanPanel } from "../components/RfidScanPanel";
-import { TapCardAnimation } from "../components/TapCardAnimation";
+import TapCardAnimation from "../components/TapCardAnimation";
 import type { Session } from "../App";
 
 function msg(e: any) {
@@ -76,7 +76,7 @@ export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }
                 <div className="font-semibold">Tap Card</div>
                 <div className="text-sm text-slate-600 mt-1">Use RFID reader</div>
               </div>
-              <div className="opacity-90">
+              <div className="opacity-90 -translate-y-2 scale-120">
                 <TapCardAnimation />
               </div>
             </div>
