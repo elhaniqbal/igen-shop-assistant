@@ -1,0 +1,27 @@
+# Use Raspberry Pi compatible Python base image
+FROM --platform=linux/arm64 python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies for GPIO, SPI, and building Python packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev \
+    python3-rpi.gpio \
+    gcc \
+    g++ \
+    make \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir paho-mqtt mfrc522 spidev
+
+# Copy your Python script
+COPY rfid_service.py ./rfid_service.py
+
+# Set the command to run your script
+CMD ["python3", "rfid_service.py"]
+
+

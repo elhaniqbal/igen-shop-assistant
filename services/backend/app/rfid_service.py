@@ -130,20 +130,19 @@ class RFIDService:
                 with self._mode_lock:
                     mode = self._mode
 
-                tag_id = str(uid) if PUBLISH_UID_ONLY else (text.strip() or str(uid))
+                card_id = str(uid)
 
                 evt = {
                     "reader_id": READER_ID,
-                    "mode": mode,            # "card" or "tool"
+                    "card_id": str(uid),
                     "uid": str(uid),
-                    "tag_id": tag_id,
-                    "text": text.strip(),
-                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "mode": mode,
                 }
+
 
                 topic = TOPIC_EVT_CARD if mode == "card" else TOPIC_EVT_TOOL
                 self.publish(topic, evt)
-                print(f"[RFID] publish {topic}: uid={uid} tag_id={tag_id}")
+                print(f"[RFID] publish {topic}: uid={uid} card_id={card_id}")
 
                 time.sleep(POLL_DELAY_S)
 
