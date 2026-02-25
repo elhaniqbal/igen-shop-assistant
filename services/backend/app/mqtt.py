@@ -217,8 +217,9 @@ def handle_evt_return(db, payload: dict):
 
 @mqtt_topic("igen/evt/rfid/card_scan")
 def handle_evt_card_scan(db, payload: dict):
-    reader_id = payload.get("reader_id", "unknown")
+    reader_id = payload.get("reader_id")
     from .routers.rfid import _rfid_set
+    print(f"READER ID: {reader_id}, Payload: {payload}")
     _rfid_set(reader_id, "card", payload)
 
 

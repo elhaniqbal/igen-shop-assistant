@@ -101,20 +101,21 @@ services:
     environment:
       - MQTT_HOST=mqtt
       - MQTT_PORT=1883
-      - BRIDGE_MODE=SIM          # switch to SERIAL on Raspberry Pi
-      - SERIAL_PORT=/dev/ttyUSB0 # used only in SERIAL mode
-      - SERIAL_BAUD=115200
+      - BRIDGE_MODE=MOONRAKER
+      - MOONRAKER_URL=http://host.docker.internal:7125
+      - MACRO_MAP_PATH=/app/macro_map.json
       - ACK_TIMEOUT_MS=500
       - DONE_TIMEOUT_MS=30000
-      - SIM_FAIL_RATE=0.08
-      - SIM_MIN_TIME_S=0.4
-      - SIM_MAX_TIME_S=1.5
-      - SIM_ACK_DELAY_S=0.05
+      - WAIT_IDLE=0
+    volumes:
+      - ./backend/bridge/macro_map.json:/app/macro_map.json:ro
     depends_on:
       mqtt:
         condition: service_started
     networks:
       - internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # For Raspberry Pi SERIAL mode, uncomment:
     # devices:
     #   - "/dev/ttyUSB0:/dev/ttyUSB0"

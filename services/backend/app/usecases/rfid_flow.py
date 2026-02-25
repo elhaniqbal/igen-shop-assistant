@@ -11,6 +11,7 @@ def now():
 
 def get_user_by_card(db: Session, card_id: str):
     u = db.execute(select(models.User).where(models.User.card_id == card_id)).scalar_one_or_none()
+    print(f"FOUND USER: {u}")
     if not u:
         raise ValueError("card_not_recognized")
     if u.status == "banned":

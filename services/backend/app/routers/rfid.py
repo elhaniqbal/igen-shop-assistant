@@ -44,7 +44,9 @@ def rfid_set_mode(req: schemas.RfidSetModeReq, mqtt: MqttBus = Depends(get_mqtt)
 
 @router.get("/consume")
 def rfid_consume(reader_id: str, kind: Literal["card", "tool"]):
+    print(f"{reader_id} READER")
     scan = _rfid_pop(reader_id, kind)
+    print(f"SCAN : {scan}")
     return {"ok": bool(scan), "scan": scan}
 
 @router.get("/peek")
