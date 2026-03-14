@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Needed for RPi GPIO/SPI libs in container
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-rpi.gpio \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir paho-mqtt mfrc522 spidev
+
+COPY rfid_service.py ./rfid_service.py
+
+CMD ["python", "rfid_service.py"]
