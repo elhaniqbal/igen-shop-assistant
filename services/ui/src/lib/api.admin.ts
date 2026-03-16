@@ -108,6 +108,40 @@ export type MotorTestStatusResp = {
   error?: string | null;
 };
 
+// Manual control
+export type AxisName = "horizontal" | "vertical";
+export type AxisDirection = "positive" | "negative";
+
+export type ManualJogAxisReq = {
+  axis: AxisName;
+  direction: AxisDirection;
+  step: number;
+};
+
+export type ManualMoveCakeReq = {
+  cake_id: number;
+  step: number;
+};
+
+export type ManualCommandResp = {
+  ok: boolean;
+  message: string;
+  request_id?: string;
+  command?: string;
+  data?: any;
+};
+
+export type ManualControlStatus = {
+  ok?: boolean;
+  state?: string;
+  horizontal_position?: number | string | null;
+  vertical_position?: number | string | null;
+  active_cake_id?: number | string | null;
+  busy?: boolean;
+  last_command?: string | null;
+  [key: string]: any;
+};
+
 // Hardware console
 export type HardwareCmdResp = {
   ok: boolean;
@@ -116,6 +150,7 @@ export type HardwareCmdResp = {
   command: string;
   eeprom: any | null;
 };
+
 export type ReadEepromResp = {
   ok: boolean;
   cake_id: number;
@@ -258,6 +293,30 @@ export const apiAdmin = {
   // motor test
   motorTestStart: (req: MotorTestReq) => http<MotorTestStartResp>(EP.adminMotorTestStart, { method: "POST", json: req }),
   motorTestStatus: (requestId: string) => http<MotorTestStatusResp>(EP.adminMotorTestStatus(requestId)),
+
+  // manual control
+  manualStatus: () => http<ManualControlStatus>(EP.adminManualStatus),
+
+  manualHomeAll: () =>
+    http<ManualCommandResp>(EP.adminManualHomeAll, { method: "POST" }),
+
+  manualGoToDoor: () =>
+    http<ManualCommandResp>(EP.adminManualGoToDoor, { method: "POST" }),
+
+  manualStop: () =>
+    http<ManualCommandResp>(EP.adminManualStop, { method: "POST" }),
+
+  manualJogAxis: (req: ManualJogAxisReq) =>
+    http<ManualCommandResp>(EP.adminManualJogAxis, {
+      method: "POST",
+      json: req,
+    }),
+
+  manualMoveCake: (req: ManualMoveCakeReq) =>
+    http<ManualCommandResp>(EP.adminManualMoveCake, {
+      method: "POST",
+      json: req,
+    }),
 
   // NEW: Hardware command console
   hardwareCommand: (cakeId: number, command: string, args?: Record<string, any>) =>

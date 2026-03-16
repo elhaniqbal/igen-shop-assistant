@@ -8,7 +8,6 @@ export const EP = {
   // --- user workflow ---
   dispense: "/dispense",
   dispenseStatus: (batchId: string) => `/dispense/${encodeURIComponent(batchId)}/status`,
-  // IMPORTANT: you DO NOT have /dispense/confirm. You DO have /rfid/tool-confirm.
   dispenseConfirm: "/rfid/tool-confirm",
 
   loans: (userId: string) => `/loans?user_id=${encodeURIComponent(userId)}`,
@@ -26,7 +25,6 @@ export const EP = {
   adminToolItems: "/admin/tool-items",
   adminToolItem: (id: string) => `/admin/tool-items/${encodeURIComponent(id)}`,
 
-  // NOTE: your route is /admin/tools/items/{tool_item_id}/tag
   adminAssignToolTag: (toolItemId: string) => `/admin/tools/items/${encodeURIComponent(toolItemId)}/tag`,
 
   adminLoans: "/admin/loans",
@@ -41,4 +39,12 @@ export const EP = {
   adminMotorTestStart: "/admin/test/motor",
   adminMotorTestStatus: (requestId: string) =>
     `/admin/test/motor/${encodeURIComponent(requestId)}/status`,
+
+  // --- admin manual control ---
+  adminManualStatus: "/admin/manual/status",
+  adminManualHomeAll: "/admin/manual/home-all",
+  adminManualGoToDoor: "/admin/manual/go-to-door",
+  adminManualStop: "/admin/manual/stop",
+  adminManualJogAxis: "/admin/manual/jog-axis",
+  adminManualMoveCake: "/admin/manual/move-cake",
 };

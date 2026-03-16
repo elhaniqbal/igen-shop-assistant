@@ -7,8 +7,17 @@ import Inventory from "./tabs/Inventory";
 import Users from "./tabs/Users";
 import TestTab from "./tabs/TestTab";
 import Cakes from "./tabs/Cakes";
+import ManualControl from "./tabs/ManualControl";
 
-type Tab = "usage" | "checked" | "overdue" | "inventory" | "users" | "tests" | "cakes";
+type Tab =
+  | "usage"
+  | "checked"
+  | "overdue"
+  | "inventory"
+  | "users"
+  | "tests"
+  | "cakes"
+  | "manual";
 
 export default function AdminShell({
   session,
@@ -27,8 +36,10 @@ export default function AdminShell({
     <button
       onClick={() => setTab(id)}
       className={[
-        "px-3 py-2 text-sm font-medium border-b-2",
-        tab === id ? "border-rose-600 text-rose-700" : "border-transparent text-slate-600 hover:text-slate-900",
+        "px-3 py-2 text-sm font-medium border-b-2 transition-colors",
+        tab === id
+          ? "border-rose-600 text-rose-700"
+          : "border-transparent text-slate-600 hover:text-slate-900",
       ].join(" ")}
     >
       {label}
@@ -55,11 +66,13 @@ export default function AdminShell({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-6">
+      <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="text-2xl font-semibold text-slate-900">Admin Dashboard</div>
-        <div className="text-slate-600 mt-1">Monitor tool usage, track overdue items, and manage inventory</div>
+        <div className="text-slate-600 mt-1">
+          Monitor tool usage, track overdue items, manage inventory, and manually jog the machine
+        </div>
 
-        <div className="mt-6 border-b border-slate-200 flex gap-6">
+        <div className="mt-6 border-b border-slate-200 flex gap-6 flex-wrap">
           <TabBtn id="usage" label="Machine Usage" />
           <TabBtn id="checked" label="Checked Out Tools" />
           <TabBtn id="overdue" label="Overdue Tools" />
@@ -67,6 +80,7 @@ export default function AdminShell({
           <TabBtn id="users" label="Users" />
           <TabBtn id="tests" label="Hardware Tests" />
           <TabBtn id="cakes" label="Cakes" />
+          <TabBtn id="manual" label="Manual Control" />
         </div>
 
         <div className="mt-6">
@@ -77,6 +91,7 @@ export default function AdminShell({
           {tab === "users" && <Users />}
           {tab === "tests" && <TestTab />}
           {tab === "cakes" && <Cakes />}
+          {tab === "manual" && <ManualControl />}
         </div>
       </div>
     </div>
