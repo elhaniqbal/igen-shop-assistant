@@ -22,21 +22,21 @@ export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }
     try {
       setErr(null);
       // ADD THIS IF BLOCK FOR LOCAL ONLY TEST
-      // if (card_id === "test") {
-      //   const u = {
-      //     role: "admin",
-      //     user_id: "SUPER",
-      //     first_name: "OVERLORD",
-      //     last_name: "2000"
-      //   }
-      // setUser(u);
-      // onLogin({
-      //   role: u.role === "admin" ? "admin" : "user",
-      //   userId: u.user_id,
-      //   name: `${u.first_name} ${u.last_name}`,
-      // });
+      if (card_id === "test") {
+        const u = {
+          role: "admin",
+          user_id: "SUPER",
+          first_name: "OVERLORD",
+          last_name: "2000"
+        }
+      setUser(u);
+      onLogin({
+        role: u.role === "admin" ? "admin" : "user",
+        userId: u.user_id,
+        name: `${u.first_name} ${u.last_name}`,
+      });
 
-      // }
+      }
       const u = await apiUser.authCard({ card_id });
       setUser(u);
       onLogin({

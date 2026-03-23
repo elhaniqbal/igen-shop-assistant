@@ -22,13 +22,11 @@ export type AdminUserCreate = {
   status?: string;
 };
 
-// Tool model policy fields (admin-configurable constraints)
 export type ToolModel = {
   tool_model_id: string;
   name: string;
   description?: string | null;
   category?: string | null;
-
   max_loan_hours?: number | null;
   max_qty_per_user?: number | null;
 };
@@ -38,7 +36,6 @@ export type AdminToolModelCreate = {
   name: string;
   description?: string | null;
   category?: string | null;
-
   max_loan_hours?: number | null;
   max_qty_per_user?: number | null;
 };
@@ -108,9 +105,9 @@ export type MotorTestStatusResp = {
   error?: string | null;
 };
 
-// Manual control
 export type AxisName = "horizontal" | "vertical";
 export type AxisDirection = "positive" | "negative";
+export type CakeMoveDirection = "cw" | "ccw";
 
 export type ManualJogAxisReq = {
   axis: AxisName;
@@ -121,6 +118,7 @@ export type ManualJogAxisReq = {
 export type ManualMoveCakeReq = {
   cake_id: number;
   step: number;
+  direction: CakeMoveDirection;
 };
 
 export type ManualCommandResp = {
@@ -133,16 +131,61 @@ export type ManualCommandResp = {
 
 export type ManualControlStatus = {
   ok?: boolean;
+  reachable?: boolean;
+  homed?: boolean;
+  busy?: boolean;
   state?: string;
+  klipper_state?: string | null;
+  klipper_state_message?: string | null;
   horizontal_position?: number | string | null;
   vertical_position?: number | string | null;
   active_cake_id?: number | string | null;
-  busy?: boolean;
   last_command?: string | null;
   [key: string]: any;
 };
 
-// Hardware console
+export type MachineStatus = {
+  ok?: boolean;
+  reachable?: boolean;
+  homed?: boolean;
+  busy?: boolean;
+  state?: string;
+  klipper_state?: string | null;
+  klipper_state_message?: string | null;
+  toolhead_position?: Record<string, number | null> | null;
+  raw?: Record<string, any> | null;
+  updated_at?: string | null;
+};
+
+export type MachineAlert = {
+  alert_id?: string;
+  ts?: string;
+  severity?: "critical" | "error" | "warning" | "info" | string;
+  style?: "black" | "red" | "amber" | "slate" | string;
+  source?: string;
+  code?: string;
+  message?: string;
+  sticky?: boolean;
+  ack_required?: boolean;
+  related_request_id?: string | null;
+  data?: Record<string, any> | null;
+  event_id?: number;
+};
+
+export type CalibrationStatus = {
+  ok?: boolean;
+  values?: Record<string, number | string | boolean | null>;
+  raw?: Record<string, any> | null;
+};
+
+export type CalibrationSetReq =
+  | { action: "set_variable"; variable: string; value: number | string }
+  | { action: "set_door_x"; value: number }
+  | { action: "set_door_distance"; value: number }
+  | { action: "set_door_z"; value: number }
+  | { action: "set_cake_center"; cake_id: number; value: number }
+  | { action: "set_cake_center_x"; cake_id: number; value: number };
+
 export type HardwareCmdResp = {
   ok: boolean;
   request_id: string;
@@ -154,7 +197,6 @@ export type HardwareCmdResp = {
 export type ReadEepromResp = {
   ok: boolean;
   cake_id: number;
-  // for now blank; later you can populate from headers/body
   eeprom: any | null;
   headers?: Record<string, string>;
 };
@@ -168,9 +210,7 @@ export type CakeHomeStatusResp = {
   error_reason?: string | null;
 };
 
-// ---------------- API ----------------
 export const apiAdmin = {
-  // Users CRUD
   listUsers: (params?: { search?: string; role?: string; status?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.search) q.set("search", params.search);
@@ -185,7 +225,6 @@ export const apiAdmin = {
   patchUser: (userId: string, patch: Partial<User>) => http<User>(EP.adminUser(userId), { method: "PATCH", json: patch }),
   deleteUser: (userId: string) => http<{ ok: boolean }>(EP.adminUser(userId), { method: "DELETE" }),
 
-  // Tool models CRUD
   listToolModels: (params?: { search?: string; category?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.search) q.set("search", params.search);
@@ -200,7 +239,6 @@ export const apiAdmin = {
     http<ToolModel>(EP.adminToolModel(id), { method: "PATCH", json: patch }),
   deleteToolModel: (id: string) => http<{ ok: boolean }>(EP.adminToolModel(id), { method: "DELETE" }),
 
-  // Tool items CRUD
   listToolItems: (params?: { tool_model_id?: string; cake_id?: string; is_active?: boolean; search?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.tool_model_id) q.set("tool_model_id", params.tool_model_id);
@@ -216,10 +254,8 @@ export const apiAdmin = {
   patchToolItem: (id: string, patch: Partial<ToolItem>) => http<ToolItem>(EP.adminToolItem(id), { method: "PATCH", json: patch }),
   deleteToolItem: (id: string) => http<{ ok: boolean }>(EP.adminToolItem(id), { method: "DELETE" }),
 
-  // Inventory
   inventory: () => http<InventoryRow[]>(EP.adminInventory),
 
-  // loans
   listLoans: (params?: {
     active_only?: boolean;
     overdue_only?: boolean;
@@ -240,19 +276,15 @@ export const apiAdmin = {
   patchLoan: (loanId: string, patch: LoanPatch) =>
     http<LoanOut>(EP.adminLoan(loanId), { method: "PATCH", json: patch }),
 
-  // NEW: confirm unconfirmed loan (admin override)
   confirmLoan: (loanId: string) =>
     http<{ ok: boolean; loan_id: string; status: string; confirmed_at: string }>(`/admin/loans/${loanId}/confirm`, { method: "POST" }),
 
-  // NEW: cancel unconfirmed loan (free inventory)
   cancelUnconfirmedLoan: (loanId: string) =>
     http<{ ok: boolean; loan_id: string; status: string; returned_at: string }>(`/admin/loans/${loanId}/cancel-unconfirmed`, { method: "POST" }),
 
-  // NEW: drop unconfirmed tool item from inventory (soft delete + cancel loan)
   dropUnconfirmedToolItem: (toolItemId: string) =>
     http<{ ok: boolean; tool_item_id: string; loan_id: string; status: string; item_is_active: boolean }>(`/admin/tool-items/${toolItemId}/drop-unconfirmed`, { method: "POST" }),
 
-  // events
   listEvents: (params?: {
     event_type?: string;
     actor_id?: string;
@@ -270,7 +302,6 @@ export const apiAdmin = {
     return http<EventOut[]>(`${EP.adminEvents}${qs ? `?${qs}` : ""}`);
   },
 
-  // assign actions
   assignUserCard: (userId: string, card_id: string) =>
     http<{ ok: boolean; user_id: string; card_id: string }>(EP.adminAssignUserCard(userId), {
       method: "PUT",
@@ -283,66 +314,49 @@ export const apiAdmin = {
       json: { tool_tag_id },
     }),
 
-  // metrics
   usage: (days: number) => {
     const q = new URLSearchParams();
     q.set("days", String(days));
     return http<UsagePoint[]>(`${EP.adminUsage}?${q.toString()}`);
   },
 
-  // motor test
   motorTestStart: (req: MotorTestReq) => http<MotorTestStartResp>(EP.adminMotorTestStart, { method: "POST", json: req }),
   motorTestStatus: (requestId: string) => http<MotorTestStatusResp>(EP.adminMotorTestStatus(requestId)),
 
-  // manual control
   manualStatus: () => http<ManualControlStatus>(EP.adminManualStatus),
+  manualHomeAll: () => http<ManualCommandResp>(EP.adminManualHomeAll, { method: "POST" }),
+  manualGoToDoor: () => http<ManualCommandResp>(EP.adminManualGoToDoor, { method: "POST" }),
+  manualStop: () => http<ManualCommandResp>(EP.adminManualStop, { method: "POST" }),
+  manualJogAxis: (req: ManualJogAxisReq) => http<ManualCommandResp>(EP.adminManualJogAxis, { method: "POST", json: req }),
+  manualMoveCake: (req: ManualMoveCakeReq) => http<ManualCommandResp>(EP.adminManualMoveCake, { method: "POST", json: req }),
 
-  manualHomeAll: () =>
-    http<ManualCommandResp>(EP.adminManualHomeAll, { method: "POST" }),
+  machineStatus: () => http<MachineStatus>(EP.adminMachineStatus),
+  machineQueryStatus: () => http<ManualCommandResp>(EP.adminMachineQueryStatus, { method: "POST" }),
+  machineRestartKlipper: () => http<ManualCommandResp>(EP.adminMachineRestartKlipper, { method: "POST" }),
+  machineFirmwareRestart: () => http<ManualCommandResp>(EP.adminMachineFirmwareRestart, { method: "POST" }),
+  machineEmergencyStop: () => http<ManualCommandResp>(EP.adminMachineEmergencyStop, { method: "POST" }),
+  machineAlerts: () => http<MachineAlert[]>(EP.adminMachineAlerts),
 
-  manualGoToDoor: () =>
-    http<ManualCommandResp>(EP.adminManualGoToDoor, { method: "POST" }),
+  calibrationStatus: () => http<CalibrationStatus>(EP.adminCalibrationStatus),
+  calibrationSet: (req: CalibrationSetReq) => http<ManualCommandResp>(EP.adminCalibrationSet, { method: "POST", json: req }),
 
-  manualStop: () =>
-    http<ManualCommandResp>(EP.adminManualStop, { method: "POST" }),
-
-  manualJogAxis: (req: ManualJogAxisReq) =>
-    http<ManualCommandResp>(EP.adminManualJogAxis, {
-      method: "POST",
-      json: req,
-    }),
-
-  manualMoveCake: (req: ManualMoveCakeReq) =>
-    http<ManualCommandResp>(EP.adminManualMoveCake, {
-      method: "POST",
-      json: req,
-    }),
-
-  // NEW: Hardware command console
   hardwareCommand: (cakeId: number, command: string, args?: Record<string, any>) =>
     http<HardwareCmdResp>(`/admin/hardware/cakes/${cakeId}/cmd`, { method: "POST", json: { command, args: args ?? {} } }),
 
   readCakeEeprom: async (cakeId: number) => {
-    // placeholder endpoint; you can change path later
     const res = await fetch(`/admin/cakes/${cakeId}/eeprom`, { method: "GET" });
     if (!res.ok) {
       const t = await res.text();
       throw new Error(t || "read eeprom failed");
     }
-
-    // Later: you said you’ll return EEPROM in request headers.
-    // This collects them so the modal can display them.
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => (headers[k] = v));
-
-    // if you later return JSON body too, this will work
     let body: any = null;
     try {
       body = await res.json();
     } catch {
       body = null;
     }
-
     return {
       ok: true,
       cake_id: cakeId,

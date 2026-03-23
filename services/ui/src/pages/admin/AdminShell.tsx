@@ -36,7 +36,7 @@ export default function AdminShell({
     <button
       onClick={() => setTab(id)}
       className={[
-        "px-3 py-2 text-sm font-medium border-b-2 transition-colors",
+        "min-h-[42px] whitespace-nowrap rounded-t-xl px-3 py-2 text-sm font-medium border-b-2 transition-colors",
         tab === id
           ? "border-rose-600 text-rose-700"
           : "border-transparent text-slate-600 hover:text-slate-900",
@@ -48,42 +48,46 @@ export default function AdminShell({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="h-14 bg-rose-700 text-white flex items-center justify-between px-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-white/15 grid place-items-center font-semibold">H</div>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold">Haven Kiosk</div>
-            <div className="text-xs text-white/80">Welcome, {displayName}</div>
+      <div className="bg-rose-700 text-white shadow-sm">
+        <div className="mx-auto flex min-h-14 max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 place-items-center rounded-xl bg-white/15 font-semibold">H</div>
+            <div className="leading-tight">
+              <div className="text-sm font-semibold">Haven Kiosk</div>
+              <div className="text-xs text-white/80">Welcome, {displayName}</div>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button onClick={onUserMode} className="rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20">
-            User Mode
-          </button>
-          <button onClick={onLogout} className="rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20">
-            Logout
-          </button>
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+            <button onClick={onUserMode} className="min-h-[42px] rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20">
+              User Mode
+            </button>
+            <button onClick={onLogout} className="min-h-[42px] rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20">
+              Logout
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 py-6">
-        <div className="text-2xl font-semibold text-slate-900">Admin Dashboard</div>
-        <div className="text-slate-600 mt-1">
-          Monitor tool usage, track overdue items, manage inventory, and manually jog the machine
+      <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
+        <div className="text-xl font-semibold text-slate-900 sm:text-2xl">Admin Dashboard</div>
+        <div className="mt-1 text-sm text-slate-600 sm:text-base">
+          Monitor tool usage, manage inventory, and control the machine from desktop, phones, or a 7-inch touch display.
         </div>
 
-        <div className="mt-6 border-b border-slate-200 flex gap-6 flex-wrap">
-          <TabBtn id="usage" label="Machine Usage" />
-          <TabBtn id="checked" label="Checked Out Tools" />
-          <TabBtn id="overdue" label="Overdue Tools" />
-          <TabBtn id="inventory" label="Inventory" />
-          <TabBtn id="users" label="Users" />
-          <TabBtn id="tests" label="Hardware Tests" />
-          <TabBtn id="cakes" label="Cakes" />
-          <TabBtn id="manual" label="Manual Control" />
+        <div className="mt-5 overflow-x-auto border-b border-slate-200">
+          <div className="flex min-w-max gap-2 sm:gap-4">
+            <TabBtn id="usage" label="Machine Usage" />
+            <TabBtn id="checked" label="Checked Out Tools" />
+            <TabBtn id="overdue" label="Overdue Tools" />
+            <TabBtn id="inventory" label="Inventory" />
+            <TabBtn id="users" label="Users" />
+            <TabBtn id="tests" label="Hardware Tests" />
+            <TabBtn id="cakes" label="Cakes" />
+            <TabBtn id="manual" label="Manual Control" />
+          </div>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-5 sm:mt-6">
           {tab === "usage" && <MachineUsage />}
           {tab === "checked" && <CheckedOutTools />}
           {tab === "overdue" && <OverdueTools />}
