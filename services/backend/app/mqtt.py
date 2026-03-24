@@ -11,6 +11,7 @@ from sqlalchemy import select
 from .utils import with_db, mqtt_topic, dispatch_mqtt
 from . import models
 from .motor_test_store import set_motor_test_status
+from .usecases.user_flow import build_hw_payload
 
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -23,11 +24,52 @@ SUB_TOPICS = [
     "igen/evt/system/fault",
     "igen/evt/system/status",
     "igen/evt/admin_test/motor",
+    "igen/evt/cake/home",
+    "igen/evt/machine/alert",
+    "igen/evt/machine/status",
+    "igen/evt/admin/manual",
+    "igen/evt/admin/machine",
+    "igen/evt/admin/calibration",
 ]
 
 
 def _now() -> datetime:
     return datetime.now()
+
+
+def _publish(topic: str, payload: dict, qos: int = 1):
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.connect(MQTT_HOST, MQTT_PORT, 60)
+    c.loop_start()
+    try:
+        c.publish(topic, json.dumps(payload), qos=qos)
+        time.sleep(0.1)
+    finally:
+        c.loop_stop()
+        c.disconnect()
+
+
+def _release_next_request_in_batch(db, batch_id: str, request_type: str, finished_request_id: str):
+    rows = db.execute(
+        select(models.LoanRequest)
+        .where(models.LoanRequest.batch_id == batch_id)
+        .order_by(models.LoanRequest.created_at.asc(), models.LoanRequest.request_id.asc())
+    ).scalars().all()
+    if not rows:
+        return
+
+    finished_seen = False
+    for row in rows:
+        if row.request_id == finished_request_id:
+            finished_seen = True
+            continue
+        if not finished_seen:
+            continue
+        if row.hw_status == "pending":
+            payload = build_hw_payload(db, row.request_id)
+            topic = "igen/cmd/dispense" if request_type == "dispense" else "igen/cmd/return"
+            _publish(topic, payload, qos=1)
+            return
 
 
 class MqttBus:
@@ -51,7 +93,6 @@ class MqttBus:
             payload = json.loads(raw)
         except Exception:
             payload = {"raw": raw}
-
         _handle_mqtt_message(topic, payload)
 
     def start(self):
@@ -79,14 +120,10 @@ class MqttBus:
 
 @with_db
 def _handle_mqtt_message(db, topic: str, payload: dict):
-    # log raw MQTT
     db.add(models.Event(event_type=f"mqtt:{topic}", payload_json=json.dumps(payload)))
     db.commit()
-
     dispatch_mqtt(db, topic, payload)
 
-
-# ---------- Topic handlers ----------
 
 @mqtt_topic("igen/evt/admin_test/motor")
 def handle_evt_admin_test_motor(db, payload: dict):
@@ -94,16 +131,14 @@ def handle_evt_admin_test_motor(db, payload: dict):
     stage = payload.get("stage")
     if not request_id or not stage:
         return
-
-    patch = {
+    set_motor_test_status(request_id, {
         "request_id": request_id,
         "stage": stage,
         "motor_id": payload.get("motor_id"),
         "action": payload.get("action"),
         "error_code": payload.get("error_code"),
         "error_reason": payload.get("error_reason"),
-    }
-    set_motor_test_status(request_id, patch)
+    })
 
 
 @mqtt_topic("igen/evt/dispense")
@@ -117,7 +152,6 @@ def handle_evt_dispense(db, payload: dict):
     if not req:
         return
 
-    # map hw stages
     if stage == "accepted":
         req.hw_status = "accepted"
     elif stage == "in_progress":
@@ -132,10 +166,7 @@ def handle_evt_dispense(db, payload: dict):
     req.hw_updated_at = _now()
     db.commit()
 
-    # CRITICAL: on successful dispense, immediately create an UNCONFIRMED loan
-    # so inventory drops even if user never confirms.
     if stage == "succeeded":
-        # If a loan already exists for this request/tool and is open, don't duplicate.
         existing_loan = db.execute(
             select(models.Loan).where(
                 models.Loan.user_id == req.user_id,
@@ -148,7 +179,6 @@ def handle_evt_dispense(db, payload: dict):
             hours = req.loan_period_hours or 24
             due_at = _now() + timedelta(hours=hours)
             loan_id = models.new_id("loan")
-
             db.add(models.Loan(
                 loan_id=loan_id,
                 user_id=req.user_id,
@@ -169,6 +199,9 @@ def handle_evt_dispense(db, payload: dict):
             ))
             db.commit()
 
+    if stage in {"succeeded", "failed"}:
+        _release_next_request_in_batch(db, req.batch_id, "dispense", req.request_id)
+
 
 @mqtt_topic("igen/evt/return")
 def handle_evt_return(db, payload: dict):
@@ -181,12 +214,21 @@ def handle_evt_return(db, payload: dict):
     if not req:
         return
 
-    if stage == "succeeded":
+    if stage == "accepted":
+        req.hw_status = "accepted"
+    elif stage == "in_progress":
+        req.hw_status = "in_progress"
+    elif stage == "succeeded":
         req.hw_status = "return_ok"
-        req.hw_updated_at = _now()
-        db.commit()
+    elif stage == "failed":
+        req.hw_status = "failed"
+        req.hw_error_code = payload.get("error_code")
+        req.hw_error_reason = payload.get("error_reason")
 
-        # mark any open loan as returned (active/overdue/unconfirmed)
+    req.hw_updated_at = _now()
+    db.commit()
+
+    if stage == "succeeded":
         loan = db.execute(
             select(models.Loan).where(
                 models.Loan.user_id == req.user_id,
@@ -207,19 +249,14 @@ def handle_evt_return(db, payload: dict):
             ))
             db.commit()
 
-    elif stage == "failed":
-        req.hw_status = "failed"
-        req.hw_error_code = payload.get("error_code")
-        req.hw_error_reason = payload.get("error_reason")
-        req.hw_updated_at = _now()
-        db.commit()
+    if stage in {"succeeded", "failed"}:
+        _release_next_request_in_batch(db, req.batch_id, "return", req.request_id)
 
 
 @mqtt_topic("igen/evt/rfid/card_scan")
 def handle_evt_card_scan(db, payload: dict):
     reader_id = payload.get("reader_id")
     from .routers.rfid import _rfid_set
-    print(f"READER ID: {reader_id}, Payload: {payload}")
     _rfid_set(reader_id, "card", payload)
 
 
@@ -232,14 +269,40 @@ def handle_evt_tool_scan(db, payload: dict):
 
 @mqtt_topic("igen/evt/system/fault")
 def handle_evt_fault(db, payload: dict):
-    pass
+    return
 
 
 @mqtt_topic("igen/evt/system/status")
 def handle_evt_status(db, payload: dict):
-    pass
+    return
 
-from .cake_cmd_store import set_cake_cmd_status  # NEW import
+
+@mqtt_topic("igen/evt/machine/alert")
+def handle_evt_machine_alert(db, payload: dict):
+    return
+
+
+@mqtt_topic("igen/evt/machine/status")
+def handle_evt_machine_status(db, payload: dict):
+    return
+
+
+@mqtt_topic("igen/evt/admin/manual")
+def handle_evt_admin_manual(db, payload: dict):
+    return
+
+
+@mqtt_topic("igen/evt/admin/machine")
+def handle_evt_admin_machine(db, payload: dict):
+    return
+
+
+@mqtt_topic("igen/evt/admin/calibration")
+def handle_evt_admin_calibration(db, payload: dict):
+    return
+
+
+from .cake_cmd_store import set_cake_cmd_status
 
 @mqtt_topic("igen/evt/cake/home")
 def handle_evt_cake_home(db, payload: dict):
@@ -247,7 +310,6 @@ def handle_evt_cake_home(db, payload: dict):
     stage = payload.get("stage")
     if not request_id or not stage:
         return
-
     set_cake_cmd_status(request_id, {
         "request_id": request_id,
         "cake_id": payload.get("cake_id"),

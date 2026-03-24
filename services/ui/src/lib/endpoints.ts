@@ -1,11 +1,9 @@
 export const EP = {
-  // --- RFID / auth ---
   rfidSetMode: "/rfid/set-mode",
   rfidConsume: (readerId: string, kind: "card" | "tool") =>
     `/rfid/consume?reader_id=${encodeURIComponent(readerId)}&kind=${kind}`,
   authCard: "/auth/card",
 
-  // --- user workflow ---
   dispense: "/dispense",
   dispenseStatus: (batchId: string) => `/dispense/${encodeURIComponent(batchId)}/status`,
   dispenseConfirm: "/rfid/tool-confirm",
@@ -14,7 +12,6 @@ export const EP = {
   doReturn: "/return",
   returnStatus: (batchId: string) => `/return/${encodeURIComponent(batchId)}/status`,
 
-  // --- admin base ---
   adminUsers: "/admin/users",
   adminUser: (userId: string) => `/admin/users/${encodeURIComponent(userId)}`,
   adminAssignUserCard: (userId: string) => `/admin/users/${encodeURIComponent(userId)}/card`,
@@ -29,6 +26,7 @@ export const EP = {
 
   adminLoans: "/admin/loans",
   adminLoan: (loanId: string) => `/admin/loans/${encodeURIComponent(loanId)}`,
+  adminLoanSendOverdueEmail: (loanId: string) => `/admin/loans/${encodeURIComponent(loanId)}/send-overdue-email`,
 
   adminEvents: "/admin/events",
   adminEvent: (eventId: number) => `/admin/events/${eventId}`,
@@ -40,11 +38,25 @@ export const EP = {
   adminMotorTestStatus: (requestId: string) =>
     `/admin/test/motor/${encodeURIComponent(requestId)}/status`,
 
-  // --- admin manual control ---
   adminManualStatus: "/admin/manual/status",
   adminManualHomeAll: "/admin/manual/home-all",
   adminManualGoToDoor: "/admin/manual/go-to-door",
   adminManualStop: "/admin/manual/stop",
   adminManualJogAxis: "/admin/manual/jog-axis",
   adminManualMoveCake: "/admin/manual/move-cake",
+
+  adminMachineStatus: "/admin/machine/status",
+  adminMachineQueryStatus: "/admin/machine/query-status",
+  adminMachineRestartKlipper: "/admin/machine/restart-klipper",
+  adminMachineFirmwareRestart: "/admin/machine/firmware-restart",
+  adminMachineEmergencyStop: "/admin/machine/emergency-stop",
+  adminMachineAlerts: "/admin/machine/alerts",
+
+  adminCalibrationStatus: "/admin/calibration/status",
+  adminCalibrationSet: "/admin/calibration/set",
+
+ adminCronJobs: "/admin/cron/jobs",
+adminCronRunHealthcheck: "/admin/cron/run-healthcheck",
+adminCronRunEmailTest: "/admin/cron/run-email-test",
+adminCronAlertRecipients: "/admin/cron/alert-recipients",
 };

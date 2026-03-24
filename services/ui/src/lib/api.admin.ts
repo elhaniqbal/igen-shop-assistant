@@ -159,6 +159,7 @@ export type MachineStatus = {
 
 export type MachineAlert = {
   alert_id?: string;
+  id?: string;
   ts?: string;
   severity?: "critical" | "error" | "warning" | "info" | string;
   style?: "black" | "red" | "amber" | "slate" | string;
@@ -208,6 +209,24 @@ export type CakeHomeStatusResp = {
   stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed";
   error_code?: string | null;
   error_reason?: string | null;
+};
+
+// ---------------- NEW: Cron / monitoring types ----------------
+export type CronJobConfig = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: string;
+  description?: string;
+  last_run_ts?: string | null;
+  last_status?: "ok" | "error" | "unknown" | null;
+};
+
+export type AlertRecipient = {
+  id?: string;
+  email: string;
+  enabled: boolean;
+  severity_threshold?: "warning" | "error" | "critical";
 };
 
 export const apiAdmin = {
@@ -275,6 +294,9 @@ export const apiAdmin = {
 
   patchLoan: (loanId: string, patch: LoanPatch) =>
     http<LoanOut>(EP.adminLoan(loanId), { method: "PATCH", json: patch }),
+
+  sendOverdueEmail: (loanId: string) =>
+    http<{ ok: boolean; loan_id: string; message: string }>(EP.adminLoanSendOverdueEmail(loanId), { method: "POST" }),
 
   confirmLoan: (loanId: string) =>
     http<{ ok: boolean; loan_id: string; status: string; confirmed_at: string }>(`/admin/loans/${loanId}/confirm`, { method: "POST" }),
@@ -370,4 +392,21 @@ export const apiAdmin = {
 
   cakeSetHomeStatus: (requestId: string) =>
     http<CakeHomeStatusResp>(`/admin/cakes/home/${requestId}/status`),
+
+  // ---------------- NEW: Cron / monitoring ----------------
+  cronJobs: async () => {
+    const data = await http<{ jobs?: CronJobConfig[] } | CronJobConfig[]>(EP.adminCronJobs);
+    return Array.isArray(data) ? data : (data.jobs ?? []);
+  },
+
+  cronRunHealthcheck: () =>
+    http<{ ok: boolean; message?: string }>(EP.adminCronRunHealthcheck, { method: "POST" }),
+
+  cronRunEmailTest: () =>
+    http<{ ok: boolean; message?: string }>(EP.adminCronRunEmailTest, { method: "POST" }),
+
+  cronAlertRecipients: async () => {
+    const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients);
+    return Array.isArray(data) ? data : (data.recipients ?? []);
+  },
 };

@@ -53,28 +53,28 @@ export default function OverdueTools() {
         <table className="min-w-full text-sm">
           <thead className="opacity-70">
             <tr>
-              <th className="text-left py-2">Loan</th>
-              <th className="text-left py-2">User</th>
-              <th className="text-left py-2">Tool Item</th>
-              <th className="text-right py-2">Overdue (h)</th>
-              <th className="text-right py-2">Extend</th>
+              <th className="text-left py-3">Loan</th>
+              <th className="text-left py-3">User</th>
+              <th className="text-left py-3">Tool Item</th>
+              <th className="text-right py-3">Overdue (h)</th>
+              <th className="text-right py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r: any) => (
-              <tr key={r.loan_id} className="border-t">
-                <td className="py-2 font-mono">{r.loan_id.slice(0, 8)}…</td>
-                <td className="py-2 font-mono">{r.user_id}</td>
-                <td className="py-2 font-mono">{r.tool_item_id}</td>
-                <td className="py-2 text-right">{r.overdue_hours}</td>
-                <td className="py-2 text-right">
-                  <ExtendDue loan={r} onDone={load} />
+              <tr key={r.loan_id} className="border-t align-top">
+                <td className="py-4 font-mono text-[13px]">{r.loan_id.slice(0, 8)}…</td>
+                <td className="py-4 font-mono text-[13px]">{r.user_id}</td>
+                <td className="py-4 font-mono text-[13px]">{r.tool_item_id}</td>
+                <td className="py-4 text-right text-base font-semibold">{r.overdue_hours}</td>
+                <td className="py-4 text-right">
+                  <OverdueActions loan={r} onDone={load} />
                 </td>
               </tr>
             ))}
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-6 text-slate-500">No overdue rows.</td>
+                <td colSpan={5} className="py-8 text-slate-500">No overdue rows.</td>
               </tr>
             ) : null}
           </tbody>
@@ -84,36 +84,65 @@ export default function OverdueTools() {
   );
 }
 
-function ExtendDue({ loan, onDone }: { loan: LoanOut; onDone: () => void }) {
+function OverdueActions({ loan, onDone }: { loan: LoanOut; onDone: () => void }) {
   const [hours, setHours] = useState(24);
-  const [busy, setBusy] = useState(false);
+  const [extendBusy, setExtendBusy] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
 
   const extend = async () => {
-    setBusy(true);
+    setExtendBusy(true);
+    setNote(null);
     try {
       const due = new Date(loan.due_at).getTime();
       const next = new Date(due + hours * 60 * 60 * 1000).toISOString();
       await apiAdmin.patchLoan(loan.loan_id, { due_at: next, status: "active" });
+      setNote(`Extended by ${hours}h`);
       onDone();
+    } catch (e: any) {
+      setNote(msg(e));
     } finally {
-      setBusy(false);
+      setExtendBusy(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    setEmailBusy(true);
+    setNote(null);
+    try {
+      const res = await apiAdmin.sendOverdueEmail(loan.loan_id);
+      setNote(res.message || "Alert sent");
+    } catch (e: any) {
+      setNote(msg(e));
+    } finally {
+      setEmailBusy(false);
     }
   };
 
   return (
-    <div className="inline-flex items-center gap-2">
-      <select className="rounded-lg border px-2 py-1 text-xs" value={hours} onChange={(e) => setHours(Number(e.target.value))}>
-        {[2, 4, 8, 12, 24, 48, 72].map((h) => (
-          <option key={h} value={h}>+{h}h</option>
-        ))}
-      </select>
-      <button
-        disabled={busy}
-        className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
-        onClick={extend}
-      >
-        Extend
-      </button>
+    <div className="flex flex-col items-end gap-2">
+      <div className="inline-flex flex-wrap items-center justify-end gap-2">
+        <select className="rounded-lg border px-3 py-2 text-xs" value={hours} onChange={(e) => setHours(Number(e.target.value))}>
+          {[2, 4, 8, 12, 24, 48, 72].map((h) => (
+            <option key={h} value={h}>+{h}h</option>
+          ))}
+        </select>
+        <button
+          disabled={extendBusy || emailBusy}
+          className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
+          onClick={extend}
+        >
+          Extend
+        </button>
+        <button
+          disabled={extendBusy || emailBusy}
+          className="rounded-lg border px-3 py-2 text-xs font-semibold hover:bg-slate-50 disabled:opacity-40"
+          onClick={sendEmail}
+        >
+          Send Email Alert
+        </button>
+      </div>
+      {note ? <div className="text-xs text-slate-500">{note}</div> : null}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
-from sqlalchemy import text
+from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 from .deps import get_db, get_mqtt
 from .. import schemas
@@ -8,12 +8,132 @@ from ..usecases import admin_crud as uc
 from ..mqtt import MqttBus
 import uuid
 from datetime import timedelta
+import json
+import os
+from urllib import error as urlerror, request as urlrequest
 
 from ..motor_test_store import set_motor_test_status, get_motor_test_status
 from ..cake_cmd_store import set_cake_cmd_status, get_cake_cmd_status
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
+
+
+def _mqtt_or_503(request: Request):
+    mqtt = getattr(request.app.state, "mqtt", None)
+    if not mqtt:
+        raise HTTPException(status_code=503, detail="MQTT not ready")
+    return mqtt
+
+
+def _new_request_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _publish_admin_command(
+    request: Request,
+    *,
+    topic: str,
+    payload: dict,
+    event_type: str,
+    db: Session | None = None,
+):
+    mqtt = _mqtt_or_503(request)
+    if db is not None:
+        uc.log_event(
+            db,
+            event_type,
+            actor_type="admin",
+            actor_id=None,
+            request_id=payload.get("request_id"),
+            tool_item_id=None,
+            payload=payload,
+        )
+        db.commit()
+    mqtt.publish(topic, payload, qos=1)
+    return payload
+
+
+def _latest_event_payload(db: Session, event_type: str) -> dict | None:
+    row = db.execute(
+        select(models.Event)
+        .where(models.Event.event_type == event_type)
+        .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+    ).scalar_one_or_none()
+    if not row:
+        return None
+    try:
+        return json.loads(row.payload_json or "{}")
+    except Exception:
+        return None
+
+
+def _moonraker_json(method: str, path: str, payload: dict | None = None, timeout: float = 3.0) -> dict:
+    url = f"{MOONRAKER_URL}{path}"
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(url=url, data=data, headers=headers, method=method)
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _direct_machine_status() -> dict | None:
+    q = "toolhead=homed_axes,position&idle_timeout=state&print_stats=state,message"
+    out = _moonraker_json("GET", f"/printer/objects/query?{q}")
+    status = (out.get("result") or {}).get("status") or {}
+    if not status:
+        return None
+    toolhead = status.get("toolhead") or {}
+    idle_timeout = status.get("idle_timeout") or {}
+    print_stats = status.get("print_stats") or {}
+    homed_axes = str(toolhead.get("homed_axes") or "")
+    pos = toolhead.get("position") or []
+    x = pos[0] if len(pos) > 0 else None
+    y = pos[1] if len(pos) > 1 else None
+    z = pos[2] if len(pos) > 2 else None
+    return {
+        "ok": True,
+        "reachable": True,
+        "state": print_stats.get("state") or idle_timeout.get("state") or "unknown",
+        "busy": str(idle_timeout.get("state") or "").lower() != "idle",
+        "homed": bool(homed_axes),
+        "homed_axes": homed_axes,
+        "horizontal_position": x,
+        "vertical_position": z,
+        "active_cake_id": None,
+        "position": pos,
+        "print_message": print_stats.get("message"),
+        "source": "moonraker_direct",
+    }
+
+
+def _coerce_manual_status(payload: dict | None) -> dict:
+    payload = payload or {}
+    pos = payload.get("position") or payload.get("machine", {}).get("position") or []
+    x = pos[0] if isinstance(pos, list) and len(pos) > 0 else payload.get("horizontal_position")
+    z = pos[2] if isinstance(pos, list) and len(pos) > 2 else payload.get("vertical_position")
+    return {
+        "ok": True,
+        "reachable": payload.get("reachable", False),
+        "state": payload.get("state") or payload.get("machine", {}).get("state") or "unknown",
+        "busy": payload.get("busy", False),
+        "homed": payload.get("homed", False),
+        "horizontal_position": x,
+        "vertical_position": z,
+        "active_cake_id": payload.get("active_cake_id"),
+        "position": pos if isinstance(pos, list) else [],
+        "error": payload.get("error"),
+        "source": payload.get("source", "mqtt_cache"),
+    }
+
 
 
 # ------------ TEST ROUTES ------------
@@ -221,6 +341,323 @@ def admin_cancel_unconfirmed_loan(loan_id: str, db: Session = Depends(get_db)):
     return uc.admin_cancel_unconfirmed_loan(db, loan_id)
 
 
+
+# ---------------- MANUAL CONTROL / MACHINE ----------------
+@router.get("/manual/status", response_model=schemas.ManualControlStatus)
+def manual_status(db: Session = Depends(get_db)):
+    direct = _direct_machine_status()
+    if direct:
+        return direct
+
+    cached = _latest_event_payload(db, "mqtt:igen/evt/machine/status")
+    if cached:
+        return _coerce_manual_status(cached)
+
+    return {
+        "ok": True,
+        "reachable": False,
+        "state": "unknown",
+        "busy": False,
+        "homed": False,
+        "horizontal_position": None,
+        "vertical_position": None,
+        "active_cake_id": None,
+        "position": [],
+        "error": "no_machine_status_yet",
+        "source": "none",
+    }
+
+
+@router.post("/manual/home-all", response_model=schemas.ManualCommandResp)
+def manual_home_all(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "home_machine",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_home_all_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued home machine command",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/manual/go-to-door", response_model=schemas.ManualCommandResp)
+def manual_go_to_door(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "move_to_door",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_go_to_door_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued move-to-door command",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/manual/stop", response_model=schemas.ManualCommandResp)
+def manual_stop(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "emergency_stop",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:manual_stop_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued emergency stop command",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/manual/jog-axis", response_model=schemas.ManualCommandResp)
+def manual_jog_axis(body: schemas.ManualJogAxisReq, request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "jog_axis",
+        "axis": body.axis,
+        "direction": body.direction,
+        "distance": body.step,
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_jog_axis_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": f"Queued jog {body.axis} {body.direction} by {body.step}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+        "data": {"axis": body.axis, "direction": body.direction, "distance": body.step},
+    }
+
+
+@router.post("/manual/move-cake", response_model=schemas.ManualCommandResp)
+def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "move_cake",
+        "cake_id": body.cake_id,
+        "direction": body.direction,
+        "steps_60": body.step,
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_move_cake_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": f"Queued cake {body.cake_id} move {body.direction} x{body.step}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+        "data": {"cake_id": body.cake_id, "direction": body.direction, "steps_60": body.step},
+    }
+
+
+@router.get("/machine/status", response_model=schemas.ManualControlStatus)
+def machine_status(db: Session = Depends(get_db)):
+    direct = _direct_machine_status()
+    if direct:
+        return direct
+    cached = _latest_event_payload(db, "mqtt:igen/evt/machine/status")
+    if cached:
+        return _coerce_manual_status(cached)
+    return {
+        "ok": True,
+        "reachable": False,
+        "state": "unknown",
+        "busy": False,
+        "homed": False,
+        "horizontal_position": None,
+        "vertical_position": None,
+        "active_cake_id": None,
+        "position": [],
+        "error": "no_machine_status_yet",
+        "source": "none",
+    }
+
+
+@router.post("/machine/query-status", response_model=schemas.ManualCommandResp)
+def machine_query_status(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("mach"),
+        "action": "query_status",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:machine_query_status_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued machine status query",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/machine/restart-klipper", response_model=schemas.ManualCommandResp)
+def machine_restart_klipper(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("mach"),
+        "action": "restart_klipper",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:machine_restart_klipper_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued Klipper restart",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/machine/firmware-restart", response_model=schemas.ManualCommandResp)
+def machine_firmware_restart(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("mach"),
+        "action": "firmware_restart",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:machine_firmware_restart_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued firmware restart",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.post("/machine/emergency-stop", response_model=schemas.ManualCommandResp)
+def machine_emergency_stop(request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("mach"),
+        "action": "emergency_stop",
+    }
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:machine_emergency_stop_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": "Queued emergency stop",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+    }
+
+
+@router.get("/machine/alerts", response_model=list[schemas.MachineAlertOut])
+def machine_alerts(
+    db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    rows = db.execute(
+        select(models.Event)
+        .where(models.Event.event_type == "mqtt:igen/evt/machine/alert")
+        .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+        .limit(limit)
+    ).scalars().all()
+
+    out = []
+    for row in rows:
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except Exception:
+            payload = {}
+        out.append({
+            "event_id": row.event_id,
+            "ts": row.ts,
+            "severity": payload.get("severity", "warning"),
+            "style": payload.get("style"),
+            "code": payload.get("code"),
+            "message": payload.get("message", ""),
+            "related_request_id": payload.get("related_request_id"),
+            "data": payload.get("data", {}),
+            "sticky": bool(payload.get("sticky", False)),
+            "ack_required": bool(payload.get("ack_required", False)),
+            "source": payload.get("source"),
+        })
+    return out
+
+
+@router.get("/calibration/status")
+def calibration_status(db: Session = Depends(get_db)):
+    cached = _latest_event_payload(db, "mqtt:igen/evt/machine/status") or {}
+    return {
+        "ok": True,
+        "source": "placeholder",
+        "machine_status": _coerce_manual_status(cached),
+        "variables": {},
+    }
+
+
+@router.post("/calibration/set", response_model=schemas.ManualCommandResp)
+def calibration_set(body: schemas.AdminCalibrationSetReq, request: Request, db: Session = Depends(get_db)):
+    payload = {
+        "request_id": _new_request_id("cal"),
+        "action": body.action or "set_variable",
+        "variable": body.variable,
+        "value": body.value,
+    }
+    if body.cake_id is not None:
+        payload["cake_id"] = body.cake_id
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/calibration",
+        payload=payload,
+        event_type="admin:calibration_set_requested",
+        db=db,
+    )
+    return {
+        "ok": True,
+        "message": f"Queued calibration write for {body.variable or body.action}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+        "data": payload,
+    }
+
 # ---------------- HARDWARE STATUS / CONSOLE ----------------
 # NOTE: you said you will add topics + bridge support later. This is the API surface the frontend will call now.
 
@@ -302,6 +739,26 @@ def cake_set_home_status(request_id: str):
     if not st:
         raise HTTPException(status_code=404, detail="unknown request_id")
     return st
+
+
+@router.post("/loans/{loan_id}/send-overdue-email")
+def send_overdue_email_alert(loan_id: str, db: Session = Depends(get_db)):
+    loan = db.get(models.Loan, loan_id)
+    if not loan:
+        raise HTTPException(404, "loan not found")
+
+    uc.log_event(
+        db,
+        "admin:overdue_email_alert_requested",
+        actor_type="admin",
+        actor_id=None,
+        request_id=None,
+        tool_item_id=getattr(loan, "tool_item_id", None),
+        payload={"loan_id": loan_id, "user_id": getattr(loan, "user_id", None)},
+    )
+    db.commit()
+
+    return {"ok": True, "loan_id": loan_id, "message": "Overdue alert request logged"}
 
 # ---------------- EVENTS (read-only) ----------------
 @router.get("/events", response_model=list[schemas.EventOut])

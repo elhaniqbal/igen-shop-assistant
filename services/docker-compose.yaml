@@ -101,7 +101,7 @@ services:
     environment:
       - MQTT_HOST=mqtt
       - MQTT_PORT=1883
-      - BRIDGE_MODE=MOONRAKER
+      - BRIDGE_MODE=SIM
       - MOONRAKER_URL=http://host.docker.internal:7125
       - MACRO_MAP_PATH=/app/macro_map.json
       - ACK_TIMEOUT_MS=500

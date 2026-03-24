@@ -4,7 +4,9 @@ import {
   type AxisName,
   type CakeMoveDirection,
   type CalibrationSetReq,
+  type HomeMode,
   type MachineAlert,
+  type PendingHardwareWait,
   type MachineStatus,
   type ManualCommandResp,
   type ManualControlStatus,
@@ -201,6 +203,7 @@ export default function ManualControl() {
   const [cakeStep, setCakeStep] = useState(1);
   const [selectedCake, setSelectedCake] = useState(1);
   const [cakeDirection, setCakeDirection] = useState<CakeMoveDirection>("cw");
+  const [homeMode, setHomeMode] = useState<HomeMode>("python_assisted");
 
   const [doorX, setDoorX] = useState("");
   const [doorZ, setDoorZ] = useState("");
@@ -215,6 +218,7 @@ export default function ManualControl() {
   const [manualStatus, setManualStatus] = useState<ManualControlStatus | null>(null);
   const [machineStatus, setMachineStatus] = useState<MachineStatus | null>(null);
   const [alerts, setAlerts] = useState<MachineAlert[]>([]);
+  const [waits, setWaits] = useState<PendingHardwareWait[]>([]);
   const [error, setError] = useState("");
 
   const statusText = useMemo(() => {
@@ -235,15 +239,17 @@ export default function ManualControl() {
   async function refreshEverything({ silent = false }: { silent?: boolean } = {}) {
     if (!silent) setRefreshingStatus(true);
     try {
-      const [manual, machine, nextAlerts] = await Promise.allSettled([
+      const [manual, machine, nextAlerts, nextWaits] = await Promise.allSettled([
         apiAdmin.manualStatus(),
         apiAdmin.machineStatus(),
         apiAdmin.machineAlerts(),
+        apiAdmin.hardwareWaits(),
       ]);
 
       if (manual.status === "fulfilled") setManualStatus(manual.value);
       if (machine.status === "fulfilled") setMachineStatus(machine.value);
       if (nextAlerts.status === "fulfilled") setAlerts(nextAlerts.value);
+      if (nextWaits.status === "fulfilled") setWaits(nextWaits.value.waits ?? []);
     } catch (err) {
       console.error(err);
       if (!silent) setError(err instanceof Error ? err.message : "Could not refresh machine state");
@@ -262,6 +268,15 @@ export default function ManualControl() {
       setError(err instanceof Error ? err.message : "Could not fetch machine alerts");
     } finally {
       setRefreshingAlerts(false);
+    }
+  }
+
+  async function refreshWaits() {
+    try {
+      const result = await apiAdmin.hardwareWaits();
+      setWaits(result.waits ?? []);
+    } catch (err) {
+      console.error(err);
     }
   }
 
@@ -302,6 +317,7 @@ export default function ManualControl() {
   useEffect(() => {
     void refreshEverything();
     void refreshCalibration();
+    void refreshWaits();
     const id = window.setInterval(() => {
       void refreshEverything({ silent: true });
     }, 5000);
@@ -330,6 +346,11 @@ export default function ManualControl() {
     void runCommand(() => apiAdmin.calibrationSet(req));
   }
 
+  const endstops = (machineStatus?.endstops ?? manualStatus?.endstops ?? {}) as Record<string, boolean | null>;
+  const verticalTilted =
+    (machineStatus?.vertical_tilted ?? manualStatus?.vertical_tilted) ??
+    ((endstops.gantry1 ?? null) !== (endstops.gantry2 ?? null) && endstops.gantry1 != null && endstops.gantry2 != null);
+
   return (
     <div className="space-y-4 sm:space-y-6">
       {criticalAlerts.length > 0 && (
@@ -340,21 +361,86 @@ export default function ManualControl() {
         </div>
       )}
 
+      {waits.length > 0 && (
+        <Card title="Pending User Confirms" subtitle="Requests waiting at the door for admin intervention">
+          <div className="space-y-3">
+            {waits.map((w) => (
+              <div key={`${w.request_id}-${w.stage}`} className="rounded-2xl border border-amber-300 bg-amber-50 p-4">
+                <div className="text-sm font-semibold text-amber-950">
+                  {w.action || "request"} · {w.stage || "waiting_user_confirm"}
+                </div>
+                <div className="mt-1 text-sm text-amber-900">
+                  {w.message ?? "Waiting for user confirmation."}
+                </div>
+                <div className="mt-2 text-xs text-amber-800">
+                  Request: {w.request_id} · Timeout: {w.timeout_s ?? 0}s
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <ActionButton
+                    label="Confirm & Continue"
+                    onClick={() => void runCommand(() => apiAdmin.hardwareConfirmRequest(w.request_id))}
+                    disabled={loading}
+                    variant="primary"
+                    fullWidth
+                  />
+                  <ActionButton
+                    label="Cancel Request"
+                    onClick={() => void runCommand(() => apiAdmin.hardwareCancelRequest(w.request_id))}
+                    disabled={loading}
+                    variant="danger"
+                    fullWidth
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] xl:gap-6 items-start">
         <div className="space-y-4 sm:space-y-6">
           <Card
             title="Machine Actions"
             subtitle="Fast actions for homing, moving to the door, refreshing status, and stopping motion"
           >
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <ActionButton label="Home All" onClick={() => void runCommand(() => apiAdmin.manualHomeAll())} disabled={loading} variant="primary" fullWidth />
-              <ActionButton label="Go to Door" onClick={() => void runCommand(() => apiAdmin.manualGoToDoor())} disabled={loading} fullWidth />
-              <ActionButton label="Refresh Status" onClick={() => void refreshEverything()} disabled={loading || refreshingStatus} fullWidth />
-              <ActionButton label="Emergency Stop" onClick={() => void runCommand(() => apiAdmin.machineEmergencyStop())} disabled={loading} variant="danger" fullWidth />
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <ActionButton label="Restart Klipper" onClick={() => void runCommand(() => apiAdmin.machineRestartKlipper())} disabled={loading} fullWidth />
-              <ActionButton label="Firmware Restart" onClick={() => void runCommand(() => apiAdmin.machineFirmwareRestart())} disabled={loading} fullWidth />
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {(["python_assisted", "true_synced", "manual_independent"] as HomeMode[]).map((mode) => (
+                  <ActionButton
+                    key={mode}
+                    label={mode}
+                    onClick={() => setHomeMode(mode)}
+                    disabled={loading}
+                    variant={homeMode === mode ? "primary" : "default"}
+                    fullWidth
+                  />
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <ActionButton
+                  label={`Home Machine (${homeMode})`}
+                  onClick={() => void runCommand(() => apiAdmin.manualHomeAll(homeMode))}
+                  disabled={loading}
+                  variant="primary"
+                  fullWidth
+                />
+                <ActionButton label="Home Horizontal" onClick={() => void runCommand(() => apiAdmin.manualHomeHorizontal())} disabled={loading} fullWidth />
+                <ActionButton label="Home Vert Left" onClick={() => void runCommand(() => apiAdmin.manualHomeVerticalLeft())} disabled={loading} fullWidth />
+                <ActionButton label="Home Vert Right" onClick={() => void runCommand(() => apiAdmin.manualHomeVerticalRight())} disabled={loading} fullWidth />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <ActionButton label="Go to Door" onClick={() => void runCommand(() => apiAdmin.manualGoToDoor())} disabled={loading} fullWidth />
+                <ActionButton label="Refresh Status" onClick={() => void refreshEverything()} disabled={loading || refreshingStatus} fullWidth />
+                <ActionButton label="Restart Klipper" onClick={() => void runCommand(() => apiAdmin.machineRestartKlipper())} disabled={loading} fullWidth />
+                <ActionButton label="Emergency Stop" onClick={() => void runCommand(() => apiAdmin.machineEmergencyStop())} disabled={loading} variant="danger" fullWidth />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <ActionButton label="Firmware Restart" onClick={() => void runCommand(() => apiAdmin.machineFirmwareRestart())} disabled={loading} fullWidth />
+                <ActionButton label="Query Status" onClick={() => void runCommand(() => apiAdmin.machineQueryStatus())} disabled={loading} fullWidth />
+              </div>
             </div>
           </Card>
 
@@ -374,8 +460,12 @@ export default function ManualControl() {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="mb-3 text-sm font-semibold text-slate-900">Vertical</div>
                   <div className="grid grid-cols-2 gap-3">
-                    <ActionButton label="↑ Up" onClick={() => handleLinearJog("vertical", "positive")} disabled={loading} fullWidth />
-                    <ActionButton label="↓ Down" onClick={() => handleLinearJog("vertical", "negative")} disabled={loading} fullWidth />
+                    <ActionButton label="↑ Sync Up" onClick={() => handleLinearJog("vertical_sync", "positive")} disabled={loading} fullWidth />
+                    <ActionButton label="↓ Sync Down" onClick={() => handleLinearJog("vertical_sync", "negative")} disabled={loading} fullWidth />
+                    <ActionButton label="↑ Left Up" onClick={() => handleLinearJog("vertical_left", "positive")} disabled={loading} fullWidth />
+                    <ActionButton label="↓ Left Down" onClick={() => handleLinearJog("vertical_left", "negative")} disabled={loading} fullWidth />
+                    <ActionButton label="↑ Right Up" onClick={() => handleLinearJog("vertical_right", "positive")} disabled={loading} fullWidth />
+                    <ActionButton label="↓ Right Down" onClick={() => handleLinearJog("vertical_right", "negative")} disabled={loading} fullWidth />
                   </div>
                 </div>
               </div>
@@ -520,7 +610,17 @@ export default function ManualControl() {
                 <StatTile label="Horizontal" value={manualStatus?.horizontal_position} />
                 <StatTile label="Vertical" value={manualStatus?.vertical_position} />
                 <StatTile label="Klipper State" value={machineStatus?.klipper_state ?? manualStatus?.klipper_state} />
+                <StatTile label="Horiz Endstop" value={endstops.horizontal} tone={endstops.horizontal ? "success" : "default"} />
+                <StatTile label="Vert Left Endstop" value={endstops.gantry1} tone={endstops.gantry1 ? "success" : "default"} />
+                <StatTile label="Vert Right Endstop" value={endstops.gantry2} tone={endstops.gantry2 ? "success" : "default"} />
+                <StatTile label="Tilt" value={verticalTilted == null ? "Unknown" : verticalTilted ? "YES" : "No"} tone={verticalTilted ? "danger" : "success"} />
               </div>
+
+              {verticalTilted && (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                  The two vertical endstops disagree, so the gantry is likely tilted. Either run the independent vertical home macro or jog gantry1 and gantry2 separately until both endstops match.
+                </div>
+              )}
 
               {(machineStatus?.klipper_state_message || manualStatus?.klipper_state_message) && (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
