@@ -11,113 +11,70 @@ import ManualControl from "./tabs/ManualControl";
 import CronMonitoring from "./tabs/CronMonitoring";
 import { useAdminAlertToasts } from "../../hooks/useAdminAlertToasts";
 import { AlertToastProvider } from "../../components/AlertToastProvider";
+import { BrandMark } from "../../components/BrandMark";
 
 function AdminAlertToastBridge() {
   useAdminAlertToasts({ enabled: true, intervalMs: 4000 });
   return null;
 }
 
-type Tab =
-  | "usage"
-  | "checked"
-  | "overdue"
-  | "inventory"
-  | "users"
-  | "tests"
-  | "cakes"
-  | "manual"
-  | "cron";
+type Tab = "usage" | "checked" | "overdue" | "inventory" | "users" | "tests" | "cakes" | "manual" | "cron";
 
-export default function AdminShell({
-  session,
-  onLogout,
-  onUserMode,
-}: {
-  session: Session;
-  onLogout: () => void;
-  onUserMode: () => void;
-}) {
-  const [tab, setTab] = useState<Tab>("usage");
-
+export default function AdminShell({ session, onLogout, onUserMode }: { session: Session; onLogout: () => void; onUserMode: () => void }) {
+  const [tab, setTab] = useState<Tab>("manual");
   const displayName = useMemo(() => session.name?.trim() || "Admin", [session.name]);
-
-  const TabBtn = ({ id, label }: { id: Tab; label: string }) => (
-    <button
-      onClick={() => setTab(id)}
-      className={[
-        "min-h-[42px] whitespace-nowrap rounded-t-xl px-3 py-2 text-sm font-medium border-b-2 transition-colors",
-        tab === id
-          ? "border-rose-600 text-rose-700"
-          : "border-transparent text-slate-600 hover:text-slate-900",
-      ].join(" ")}
-    >
-      {label}
-    </button>
-  );
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "manual", label: "Manual Control" },
+    { id: "cakes", label: "Cakes" },
+    { id: "tests", label: "Hardware Tests" },
+    { id: "inventory", label: "Inventory" },
+    { id: "checked", label: "Checked Out" },
+    { id: "overdue", label: "Overdue" },
+    { id: "usage", label: "Usage" },
+    { id: "users", label: "Users" },
+    { id: "cron", label: "Cron & Alerts" },
+  ];
 
   return (
     <AlertToastProvider>
       <AdminAlertToastBridge />
-
-      <div className="min-h-screen bg-slate-50">
-        <div className="bg-rose-700 text-white shadow-sm">
-          <div className="mx-auto flex min-h-14 max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            <div className="flex items-center gap-3">
-              <div className="grid h-9 w-9 place-items-center rounded-xl bg-white/15 font-semibold">H</div>
-              <div className="leading-tight">
-                <div className="text-sm font-semibold">Haven Kiosk</div>
-                <div className="text-xs text-white/80">Welcome, {displayName}</div>
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(244,63,94,0.10),_transparent_25%),linear-gradient(180deg,#fff8fb_0%,#f8fafc_40%,#f8fafc_100%)]">
+        <div className="border-b border-white/70 bg-white/80 shadow-sm backdrop-blur">
+          <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-4">
+                <BrandMark size={60} spinning />
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.32em] text-rose-600">HAVEN Admin Console</div>
+                  <div className="mt-1 text-2xl font-black text-slate-950">Machine operations, inventory, and alerts</div>
+                  <div className="mt-1 text-sm text-slate-600">Signed in as {displayName}. Optimized for desktop, phone, and kiosk touchscreen control.</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={onUserMode} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-[radial-gradient(circle_at_top,_rgba(255,61,87,0.10),_transparent_18%),linear-gradient(180deg,#fff8fb_0%,#f8fafc_32%,#eef2ff_100%)]">User Mode</button>
+                <button onClick={onLogout} className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Logout</button>
               </div>
             </div>
-
-            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-              <button
-                onClick={onUserMode}
-                className="min-h-[42px] rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20"
-              >
-                User Mode
-              </button>
-              <button
-                onClick={onLogout}
-                className="min-h-[42px] rounded-xl bg-white/15 px-3 py-2 text-sm hover:bg-white/20"
-              >
-                Logout
-              </button>
+            <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
+              {tabs.map((t) => (
+                <button key={t.id} onClick={() => setTab(t.id)} className={[
+                  "whitespace-nowrap rounded-2xl px-4 py-2.5 text-sm font-medium transition",
+                  tab === t.id ? "bg-rose-600 text-white shadow" : "border border-slate-200 bg-white text-slate-700 hover:bg-[radial-gradient(circle_at_top,_rgba(255,61,87,0.10),_transparent_18%),linear-gradient(180deg,#fff8fb_0%,#f8fafc_32%,#eef2ff_100%)]",
+                ].join(" ")}>{t.label}</button>
+              ))}
             </div>
           </div>
         </div>
-
-        <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
-          <div className="text-xl font-semibold text-slate-900 sm:text-2xl">Admin Dashboard</div>
-          <div className="mt-1 text-sm text-slate-600 sm:text-base">
-            Monitor tool usage, manage inventory, and control the machine from desktop, phones, or a 7-inch touch display.
-          </div>
-
-          <div className="mt-5 overflow-x-auto border-b border-slate-200">
-            <div className="flex min-w-max gap-2 sm:gap-4">
-              <TabBtn id="usage" label="Machine Usage" />
-              <TabBtn id="checked" label="Checked Out Tools" />
-              <TabBtn id="overdue" label="Overdue Tools" />
-              <TabBtn id="inventory" label="Inventory" />
-              <TabBtn id="users" label="Users" />
-              <TabBtn id="tests" label="Hardware Tests" />
-              <TabBtn id="cakes" label="Cakes" />
-              <TabBtn id="manual" label="Manual Control" />
-              <TabBtn id="cron" label="Cron & Monitoring" />
-            </div>
-          </div>
-
-          <div className="mt-5 sm:mt-6">
-            {tab === "usage" && <MachineUsage />}
-            {tab === "checked" && <CheckedOutTools />}
-            {tab === "overdue" && <OverdueTools />}
-            {tab === "inventory" && <Inventory />}
-            {tab === "users" && <Users />}
-            {tab === "tests" && <TestTab />}
-            {tab === "cakes" && <Cakes />}
-            {tab === "manual" && <ManualControl />}
-            {tab === "cron" && <CronMonitoring />}
-          </div>
+        <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+          {tab === "usage" && <MachineUsage />}
+          {tab === "checked" && <CheckedOutTools />}
+          {tab === "overdue" && <OverdueTools />}
+          {tab === "inventory" && <Inventory />}
+          {tab === "users" && <Users />}
+          {tab === "tests" && <TestTab />}
+          {tab === "cakes" && <Cakes />}
+          {tab === "manual" && <ManualControl />}
+          {tab === "cron" && <CronMonitoring />}
         </div>
       </div>
     </AlertToastProvider>

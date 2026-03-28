@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
-from .deps import get_db, get_mqtt
+from .deps import get_db, get_mqtt, require_admin
 from .. import schemas
 from .. import models
 from ..usecases import admin_crud as uc
+from ..usecases.user_flow import get_cake_overview, get_cake_current_slot, normalize_slot
 from ..mqtt import MqttBus
 import uuid
 from datetime import timedelta
@@ -14,9 +15,10 @@ from urllib import error as urlerror, request as urlrequest
 
 from ..motor_test_store import set_motor_test_status, get_motor_test_status
 from ..cake_cmd_store import set_cake_cmd_status, get_cake_cmd_status
+from ..services.email_service import send_email, send_template, list_templates
 
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
 
@@ -57,11 +59,16 @@ def _publish_admin_command(
 
 
 def _latest_event_payload(db: Session, event_type: str) -> dict | None:
-    row = db.execute(
-        select(models.Event)
-        .where(models.Event.event_type == event_type)
-        .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
-    ).scalar_one_or_none()
+    row = (
+        db.execute(
+            select(models.Event)
+            .where(models.Event.event_type == event_type)
+            .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
     if not row:
         return None
     try:
@@ -458,12 +465,15 @@ def manual_jog_axis(body: schemas.ManualJogAxisReq, request: Request, db: Sessio
 
 @router.post("/manual/move-cake", response_model=schemas.ManualCommandResp)
 def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Session = Depends(get_db)):
+    current_slot = get_cake_current_slot(db, f"cake{body.cake_id}")
+    signed_step = body.step if body.direction == "cw" else -body.step
+    target_slot = normalize_slot(current_slot + signed_step)
     payload = {
         "request_id": _new_request_id("adm"),
         "action": "move_cake",
         "cake_id": body.cake_id,
-        "direction": body.direction,
-        "steps_60": body.step,
+        "current_slot": current_slot,
+        "target_slot": target_slot,
     }
     _publish_admin_command(
         request,
@@ -474,10 +484,10 @@ def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Sess
     )
     return {
         "ok": True,
-        "message": f"Queued cake {body.cake_id} move {body.direction} x{body.step}",
+        "message": f"Queued move cake {body.cake_id} from slot {current_slot} to slot {target_slot}",
         "request_id": payload["request_id"],
         "command": payload["action"],
-        "data": {"cake_id": body.cake_id, "direction": body.direction, "steps_60": body.step},
+        "data": {"cake_id": body.cake_id, "current_slot": current_slot, "target_slot": target_slot},
     }
 
 
@@ -871,3 +881,36 @@ def metrics_usage(db: Session = Depends(get_db), days: int = Query(default=14, g
     """)
     rows = db.execute(q, {"days": days}).mappings().all()
     return [{"day": r["day"], "dispenses": r["dispenses"], "returns": r["returns"]} for r in rows]
+
+
+@router.get("/cakes")
+def cakes_overview(db: Session = Depends(get_db)):
+    return {"cakes": get_cake_overview(db)}
+
+
+@router.get("/emails/templates")
+def email_templates():
+    return {"templates": list_templates()}
+
+
+@router.post("/emails/send")
+def admin_send_email(body: dict):
+    to = str(body.get("to") or "").strip()
+    subject = str(body.get("subject") or "").strip()
+    message = str(body.get("message") or "").strip()
+    if not to or not subject or not message:
+        raise HTTPException(status_code=400, detail="to_subject_message_required")
+    return send_email(to=to, subject=subject, body=message)
+
+
+@router.post("/emails/send-template")
+def admin_send_template(body: dict):
+    to = str(body.get("to") or "").strip()
+    template_name = str(body.get("template_name") or "").strip()
+    context = body.get("context") or {}
+    if not to or not template_name:
+        raise HTTPException(status_code=400, detail="to_template_required")
+    try:
+        return send_template(to=to, template_name=template_name, context=context)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

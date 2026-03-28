@@ -12,41 +12,49 @@ export function RfidScanPanel(props: {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    let t: number | undefined;
+  let alive = true;
+  let t: number | undefined;
 
-    const run = async () => {
-      try {
-        setErr(null);
-        await apiUser.rfidSetMode({ reader_id: CONFIG.readerId, mode: kind });
+  const tick = async () => {
+    if (!alive) return;
 
-        const tick = async () => {
-          if (!alive) return;
-          try {
-            const resp = await apiUser.rfidConsume(CONFIG.readerId, kind);
-            if (resp.ok && resp.scan) {
-              onScan(resp.scan);
-              return;
-            }
-          } catch (e) {
-            setErr(e && typeof e === "object" && "message" in e ? String((e as any).message) : "RFID poll failed");
-            return;
-          }
-          t = window.setTimeout(tick, 250);
-        };
-
-        tick();
-      } catch (e) {
-        setErr(e && typeof e === "object" && "message" in e ? String((e as any).message) : "RFID setup failed");
+    try {
+      setErr(null);
+      const resp = await apiUser.rfidConsume(CONFIG.readerId, kind);
+      if (resp.ok && resp.scan) {
+        onScan(resp.scan);
+        return;
       }
-    };
+    } catch (e) {
+      setErr(
+        e && typeof e === "object" && "message" in e
+          ? String((e as any).message)
+          : "RFID poll failed"
+      );
+      return;
+    }
 
-    run();
-    return () => {
-      alive = false;
-      if (t) window.clearTimeout(t);
-    };
-  }, [kind, onScan]);
+    t = window.setTimeout(tick, 250);
+  };
+
+  const run = async () => {
+    // Try set-mode, but do not block the panel if it fails.
+    try {
+      await apiUser.rfidSetMode({ reader_id: CONFIG.readerId, mode: kind });
+    } catch {
+      // Ignore set-mode failure for now; polling consume is the important part.
+    }
+
+    tick();
+  };
+
+  run();
+
+  return () => {
+    alive = false;
+    if (t) window.clearTimeout(t);
+  };
+}, [kind, onScan]);
 
   return (
     <div className="rounded-2xl border p-4 bg-white/5">

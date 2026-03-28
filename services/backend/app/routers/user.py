@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Cookie
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from .deps import get_db, get_mqtt
+
+from .deps import get_db, get_mqtt, get_current_user
 from ..mqtt import MqttBus
 from .. import schemas, models
+from ..auth import SESSION_COOKIE_NAME, create_session, revoke_session, clear_session_cookie
 from ..usecases.user_flow import (
     build_hw_payload,
     create_dispense_batch,
@@ -31,12 +35,51 @@ def _publish_first_request_for_batch(db: Session, mqtt: MqttBus, batch_id: str):
     mqtt.publish(topic, payload, qos=1)
 
 
+@router.post("/auth/session/card")
+def auth_session_card(req: schemas.CardAuthRequest, response: Response, db: Session = Depends(get_db)):
+    try:
+        card = get_user_by_card(db, req.card_id)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    user = db.get(models.User, card["user_id"])
+    assert user is not None
+    return create_session(db, user, response)
+
+
+@router.get("/auth/session/me")
+def auth_session_me(user: models.User = Depends(get_current_user)):
+    return {
+        "ok": True,
+        "user_id": user.user_id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": user.role,
+        "status": user.status,
+    }
+
+
+@router.post("/auth/session/logout")
+def auth_session_logout(
+    response: Response,
+    db: Session = Depends(get_db),
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    revoke_session(db, session_token)
+    clear_session_cookie(response)
+    return {"ok": True}
+
+
 @router.post("/dispense", response_model=schemas.DispenseBatchResponse)
-def dispense(req: schemas.DispenseBatchRequest, db: Session = Depends(get_db), mqtt: MqttBus = Depends(get_mqtt)):
+def dispense(
+    req: schemas.DispenseBatchRequest,
+    db: Session = Depends(get_db),
+    mqtt: MqttBus = Depends(get_mqtt),
+    user: models.User = Depends(get_current_user),
+):
     try:
         out = create_dispense_batch(
             db=db,
-            user_id=req.user_id,
+            user_id=user.user_id,
             items=[i.model_dump() for i in req.items],
             loan_period_hours=req.loan_period_hours,
         )
@@ -48,14 +91,31 @@ def dispense(req: schemas.DispenseBatchRequest, db: Session = Depends(get_db), m
 
 
 @router.get("/dispense/{batch_id}/status")
-def dispense_status(batch_id: str, db: Session = Depends(get_db)):
+def dispense_status(batch_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     return {"batch_id": batch_id, "items": get_batch_status(db, batch_id)}
 
 
+@router.post("/dispense/requests/{request_id}/confirm")
+def confirm_dispense_request(request_id: str, mqtt: MqttBus = Depends(get_mqtt), user: models.User = Depends(get_current_user)):
+    mqtt.publish("igen/cmd/hardware/confirm", {"request_id": request_id}, qos=1)
+    return {"ok": True, "request_id": request_id}
+
+
+@router.post("/dispense/requests/{request_id}/cancel")
+def cancel_dispense_request(request_id: str, mqtt: MqttBus = Depends(get_mqtt), user: models.User = Depends(get_current_user)):
+    mqtt.publish("igen/cmd/hardware/cancel", {"request_id": request_id}, qos=1)
+    return {"ok": True, "request_id": request_id}
+
+
 @router.post("/return", response_model=schemas.ReturnBatchResponse)
-def do_return(req: schemas.ReturnBatchRequest, db: Session = Depends(get_db), mqtt: MqttBus = Depends(get_mqtt)):
+def do_return(
+    req: schemas.ReturnBatchRequest,
+    db: Session = Depends(get_db),
+    mqtt: MqttBus = Depends(get_mqtt),
+    user: models.User = Depends(get_current_user),
+):
     try:
-        out = create_return_batch(db=db, user_id=req.user_id, items=[i.model_dump() for i in req.items])
+        out = create_return_batch(db=db, user_id=user.user_id, items=[i.model_dump() for i in req.items])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -64,13 +124,25 @@ def do_return(req: schemas.ReturnBatchRequest, db: Session = Depends(get_db), mq
 
 
 @router.get("/return/{batch_id}/status")
-def return_status(batch_id: str, db: Session = Depends(get_db)):
+def return_status(batch_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     return {"batch_id": batch_id, "items": get_batch_status(db, batch_id)}
 
 
+@router.post("/return/requests/{request_id}/confirm")
+def confirm_return_request(request_id: str, mqtt: MqttBus = Depends(get_mqtt), user: models.User = Depends(get_current_user)):
+    mqtt.publish("igen/cmd/hardware/confirm", {"request_id": request_id}, qos=1)
+    return {"ok": True, "request_id": request_id}
+
+
+@router.post("/return/requests/{request_id}/cancel")
+def cancel_return_request(request_id: str, mqtt: MqttBus = Depends(get_mqtt), user: models.User = Depends(get_current_user)):
+    mqtt.publish("igen/cmd/hardware/cancel", {"request_id": request_id}, qos=1)
+    return {"ok": True, "request_id": request_id}
+
+
 @router.get("/loans")
-def loans(user_id: str, db: Session = Depends(get_db)):
-    return {"user_id": user_id, "loans": list_active_loans(db, user_id)}
+def loans(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    return {"user_id": user.user_id, "loans": list_active_loans(db, user.user_id)}
 
 
 @router.post("/auth/card")

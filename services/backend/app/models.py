@@ -100,3 +100,21 @@ class Event(Base):
     request_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tool_item_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class CakeState(Base):
+    __tablename__ = "cake_state"
+    cake_id: Mapped[str] = mapped_column(String, primary_key=True)
+    current_slot: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_token: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
+    role_snapshot: Mapped[str] = mapped_column(String, default="student")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

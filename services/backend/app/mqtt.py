@@ -11,7 +11,7 @@ from sqlalchemy import select
 from .utils import with_db, mqtt_topic, dispatch_mqtt
 from . import models
 from .motor_test_store import set_motor_test_status
-from .usecases.user_flow import build_hw_payload
+from .usecases.user_flow import build_hw_payload, set_cake_current_slot, parse_slot_index
 
 MQTT_HOST = os.getenv("MQTT_HOST", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -30,6 +30,7 @@ SUB_TOPICS = [
     "igen/evt/admin/manual",
     "igen/evt/admin/machine",
     "igen/evt/admin/calibration",
+    "igen/evt/hardware/wait",
 ]
 
 
@@ -141,6 +142,23 @@ def handle_evt_admin_test_motor(db, payload: dict):
     })
 
 
+def _set_request_status(req: models.LoanRequest, payload: dict):
+    stage = payload.get("stage")
+    if stage == "accepted":
+        req.hw_status = "accepted"
+    elif stage in {"in_progress", "move_to_cake", "rotate_cake", "move_to_door", "park"}:
+        req.hw_status = "in_progress"
+    elif stage == "waiting_user_confirm":
+        req.hw_status = "waiting_user_confirm"
+    elif stage == "succeeded":
+        req.hw_status = "dispensed_ok" if req.request_type == "dispense" else "return_ok"
+    elif stage == "failed":
+        req.hw_status = "failed"
+        req.hw_error_code = payload.get("error_code")
+        req.hw_error_reason = payload.get("error_reason")
+    req.hw_updated_at = _now()
+
+
 @mqtt_topic("igen/evt/dispense")
 def handle_evt_dispense(db, payload: dict):
     request_id = payload.get("request_id")
@@ -152,21 +170,21 @@ def handle_evt_dispense(db, payload: dict):
     if not req:
         return
 
-    if stage == "accepted":
-        req.hw_status = "accepted"
-    elif stage == "in_progress":
-        req.hw_status = "in_progress"
-    elif stage == "succeeded":
-        req.hw_status = "dispensed_ok"
-    elif stage == "failed":
-        req.hw_status = "failed"
-        req.hw_error_code = payload.get("error_code")
-        req.hw_error_reason = payload.get("error_reason")
-
-    req.hw_updated_at = _now()
+    _set_request_status(req, payload)
     db.commit()
 
     if stage == "succeeded":
+        tool = db.get(models.ToolItem, req.tool_item_id)
+        if tool:
+            slot = parse_slot_index(req.slot_id)
+            set_cake_current_slot(db, tool.cake_id, slot)
+            state = db.get(models.CakeSlotState, {"cake_id": tool.cake_id, "slot_index": slot})
+            if state is None:
+                state = models.CakeSlotState(cake_id=tool.cake_id, slot_index=slot, tool_item_id=None)
+                db.add(state)
+            state.tool_item_id = None
+            db.commit()
+
         existing_loan = db.execute(
             select(models.Loan).where(
                 models.Loan.user_id == req.user_id,
@@ -214,21 +232,21 @@ def handle_evt_return(db, payload: dict):
     if not req:
         return
 
-    if stage == "accepted":
-        req.hw_status = "accepted"
-    elif stage == "in_progress":
-        req.hw_status = "in_progress"
-    elif stage == "succeeded":
-        req.hw_status = "return_ok"
-    elif stage == "failed":
-        req.hw_status = "failed"
-        req.hw_error_code = payload.get("error_code")
-        req.hw_error_reason = payload.get("error_reason")
-
-    req.hw_updated_at = _now()
+    _set_request_status(req, payload)
     db.commit()
 
     if stage == "succeeded":
+        tool = db.get(models.ToolItem, req.tool_item_id)
+        if tool:
+            slot = parse_slot_index(req.slot_id)
+            set_cake_current_slot(db, tool.cake_id, slot)
+            state = db.get(models.CakeSlotState, {"cake_id": tool.cake_id, "slot_index": slot})
+            if state is None:
+                state = models.CakeSlotState(cake_id=tool.cake_id, slot_index=slot, tool_item_id=req.tool_item_id)
+                db.add(state)
+            state.tool_item_id = req.tool_item_id
+            db.commit()
+
         loan = db.execute(
             select(models.Loan).where(
                 models.Loan.user_id == req.user_id,
@@ -262,58 +280,6 @@ def handle_evt_card_scan(db, payload: dict):
 
 @mqtt_topic("igen/evt/rfid/tool_scan")
 def handle_evt_tool_scan(db, payload: dict):
-    reader_id = payload.get("reader_id", "unknown")
+    reader_id = payload.get("reader_id")
     from .routers.rfid import _rfid_set
     _rfid_set(reader_id, "tool", payload)
-
-
-@mqtt_topic("igen/evt/system/fault")
-def handle_evt_fault(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/system/status")
-def handle_evt_status(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/machine/alert")
-def handle_evt_machine_alert(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/machine/status")
-def handle_evt_machine_status(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/admin/manual")
-def handle_evt_admin_manual(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/admin/machine")
-def handle_evt_admin_machine(db, payload: dict):
-    return
-
-
-@mqtt_topic("igen/evt/admin/calibration")
-def handle_evt_admin_calibration(db, payload: dict):
-    return
-
-
-from .cake_cmd_store import set_cake_cmd_status
-
-@mqtt_topic("igen/evt/cake/home")
-def handle_evt_cake_home(db, payload: dict):
-    request_id = payload.get("request_id")
-    stage = payload.get("stage")
-    if not request_id or not stage:
-        return
-    set_cake_cmd_status(request_id, {
-        "request_id": request_id,
-        "cake_id": payload.get("cake_id"),
-        "stage": stage,
-        "error_code": payload.get("error_code"),
-        "error_reason": payload.get("error_reason"),
-    })

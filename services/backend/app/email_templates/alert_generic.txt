@@ -1,0 +1,11 @@
+Subject: ShopAssistant alert: $code
+
+Hello,
+
+An automated ShopAssistant alert was generated.
+
+Code: $code
+Message: $message
+
+Payload:
+$payload

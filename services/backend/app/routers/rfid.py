@@ -4,7 +4,7 @@ from typing import Optional, Literal
 from ..mqtt import MqttBus
 from .. import schemas
 from ..usecases.rfid_flow import confirm_tool_receipt
-from .deps import get_db, get_mqtt
+from .deps import get_db, get_mqtt, get_current_user
 import threading 
 
 router = APIRouter(prefix="/rfid", tags=["rfid"])
@@ -13,9 +13,9 @@ _RFID_LOCK = threading.Lock()
 _RFID_LAST: dict[tuple[str, str], dict] = {}  # key=(reader_id, kind) kind in {"card","tool"}
 
 @router.post("/tool-confirm")
-def tool_confirm(req: schemas.ToolConfirmRequest, db: Session = Depends(get_db)):
+def tool_confirm(req: schemas.ToolConfirmRequest, db: Session = Depends(get_db), user = Depends(get_current_user)):
     try:
-        out = confirm_tool_receipt(db, req.user_id, req.tool_tag_id)
+        out = confirm_tool_receipt(db, user.user_id, req.tool_tag_id)
         return {"ok": True, **out}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
