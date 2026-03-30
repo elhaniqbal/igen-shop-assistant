@@ -19,7 +19,7 @@ export default function App() {
     (async () => {
       try {
         const me = await apiUser.sessionMe();
-        if (alive && me?.user_id) {
+        if (alive && me?.ok && me?.user_id) {
           setSession({ role: me.role === "admin" ? "admin" : "user", userId: me.user_id, name: `${me.first_name} ${me.last_name}` });
         }
       } catch {

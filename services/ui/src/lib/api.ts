@@ -38,7 +38,11 @@ export async function http<T>(path: string, init?: RequestInit & { json?: unknow
   const hasJson = init?.json !== undefined;
   if (hasJson) headers.set("Content-Type", "application/json");
 
-  const url = `${API_BASE}${path}`;
+  const url =
+    API_BASE
+      ? `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`
+      : path;
+
   const res = await fetch(url, {
     ...init,
     credentials: "include",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import Cookie, Depends
+from fastapi import Cookie, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..auth import SESSION_COOKIE_NAME, get_session_user, require_admin_user
@@ -19,8 +19,10 @@ def get_db():
         db.close()
 
 
-def get_mqtt(req) -> MqttBus:
-    return req.app.state.mqtt
+
+
+def get_mqtt(request: Request) -> MqttBus:
+    return request.app.state.mqtt
 
 
 def get_current_user(

@@ -42,6 +42,7 @@ export type MotorAction = "dispense" | "return";
 export type MotorTestReq = { motor_id: number; action: MotorAction };
 export type MotorTestStartResp = { request_id: string; motor_id: number; action: MotorAction };
 export type LoanPatch = Partial<Pick<LoanOut, "due_at" | "status" | "confirmed_at" | "returned_at">>;
+export type AdminLoanExtendResp = { ok: boolean; loan_id: string; due_at: string };
 export type MotorTestStatusResp = { request_id: string; stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed"; error_code?: string | null; error?: string | null };
 export type AxisName = "horizontal" | "vertical";
 export type AxisDirection = "positive" | "negative";
@@ -107,6 +108,7 @@ export const apiAdmin = {
   createToolItem: (i: AdminToolItemCreate) => http<ToolItem>(EP.adminToolItems, { method: "POST", json: i }),
   patchToolItem: (id: string, patch: Partial<ToolItem>) => http<ToolItem>(EP.adminToolItem(id), { method: "PATCH", json: patch }),
   deleteToolItem: (id: string) => http<{ ok: boolean }>(EP.adminToolItem(id), { method: "DELETE" }),
+  dropUnconfirmedToolItem: (toolItemId: string) => http<{ ok: boolean; tool_item_id: string; loan_id: string; status: string; item_is_active: boolean }>(`${EP.adminToolItem(toolItemId)}/drop-unconfirmed`, { method: "POST" }),
   inventory: () => http<InventoryRow[]>(EP.adminInventory),
   listLoans: (params?: { active_only?: boolean; overdue_only?: boolean; user_id?: string; tool_item_id?: string; limit?: number }) => {
     const q = new URLSearchParams();
@@ -119,6 +121,7 @@ export const apiAdmin = {
     return http<LoanOut[]>(`${EP.adminLoans}${qs ? `?${qs}` : ""}`);
   },
   patchLoan: (loanId: string, patch: LoanPatch) => http<LoanOut>(EP.adminLoan(loanId), { method: "PATCH", json: patch }),
+  extendLoan: (loanId: string, add_hours: number) => http<AdminLoanExtendResp>(EP.adminLoanExtend(loanId), { method: "POST", json: { add_hours } }),
   sendOverdueEmail: (loanId: string) => http<{ ok: boolean; loan_id: string; message: string }>(EP.adminLoanSendOverdueEmail(loanId), { method: "POST" }),
   listEvents: (params?: { event_type?: string; actor_id?: string; request_id?: string; tool_item_id?: string; limit?: number }) => {
     const q = new URLSearchParams();
@@ -177,4 +180,9 @@ export const apiAdmin = {
   cronRunHealthcheck: () => http<{ ok: boolean; message?: string }>(EP.adminCronRunHealthcheck, { method: "POST" }),
   cronRunEmailTest: () => http<{ ok: boolean; message?: string }>(EP.adminCronRunEmailTest, { method: "POST" }),
   cronAlertRecipients: async () => { const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients); return Array.isArray(data) ? data : (data.recipients ?? []); },
+
+  confirmLoan: (loanId: string) =>
+  http<{ ok: boolean }>(EP.adminLoanConfirm(loanId), {
+    method: "POST",
+  }),
 };

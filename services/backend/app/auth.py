@@ -21,20 +21,23 @@ def utcnow() -> datetime:
     return datetime.now()
 
 
-def _expiry() -> datetime:
-    return utcnow() + timedelta(hours=SESSION_TTL_HOURS)
+def _expiry_for_role(role: str) -> datetime:
+    if role == "admin":
+        return utcnow() + timedelta(hours=12)  # persistent-ish
+    return utcnow() + timedelta(minutes=5)    # user timeout
 
 
 def create_session(db: Session, user: models.User, response: Response) -> dict:
     token = secrets.token_urlsafe(32)
     session_id = models.new_id("sess")
+    expires = _expiry_for_role(user.role)
     db.add(models.AuthSession(
         session_id=session_id,
         session_token=token,
         user_id=user.user_id,
         role_snapshot=user.role,
         created_at=utcnow(),
-        expires_at=_expiry(),
+        expires_at=expires,
         revoked_at=None,
     ))
     db.commit()
@@ -44,15 +47,18 @@ def create_session(db: Session, user: models.User, response: Response) -> dict:
         httponly=True,
         secure=SESSION_SECURE,
         samesite=SESSION_SAMESITE,
-        max_age=SESSION_TTL_HOURS * 3600,
+        max_age=int((expires - utcnow()).total_seconds()),
         path="/",
     )
     return {
-        "ok": True,
-        "user_id": user.user_id,
-        "role": user.role,
-        "expires_at": _expiry().isoformat(),
-    }
+    "ok": True,
+    "user_id": user.user_id,
+    "first_name": user.first_name,
+    "last_name": user.last_name,
+    "role": user.role,
+    "status": user.status,
+    "expires_at": expires.isoformat(),
+}
 
 
 def revoke_session(db: Session, token: Optional[str]) -> None:
@@ -83,6 +89,10 @@ def get_session_user(db: Session, token: Optional[str]) -> models.User:
         raise HTTPException(status_code=401, detail="invalid_session_user")
     if user.status == "banned":
         raise HTTPException(status_code=403, detail="user_banned")
+    
+    # extend session on use
+    sess.expires_at = _expiry_for_role(sess.role_snapshot)
+    db.commit()
     return user
 
 

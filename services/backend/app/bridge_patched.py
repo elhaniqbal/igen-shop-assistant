@@ -1331,24 +1331,21 @@ def handle_admin_test_motor(self: Bridge2, payload: dict):
         self._dispatch_async(self._execute_motor_test, payload)
 
 
-# IMPORTANT:
-# Do NOT dedup confirm/cancel. They intentionally reuse the same request_id
-# as the original dispense/return request, so dedup would drop them.
 @cmd(TOPIC_CMD_HW_CONFIRM)
+@dedup_cmd("request_id")
 def handle_hw_confirm(self: Bridge2, payload: dict):
     request_id = str(payload["request_id"])
     try:
-        print(f"[BRIDGE2][CONFIRM] request_id={request_id} received")
         self._resolve_user_confirm(request_id, True)
     except BridgeError as e:
         self._publish_alert(code=e.code, message=e.reason, severity="warning", related_request_id=request_id)
 
 
 @cmd(TOPIC_CMD_HW_CANCEL)
+@dedup_cmd("request_id")
 def handle_hw_cancel(self: Bridge2, payload: dict):
     request_id = str(payload["request_id"])
     try:
-        print(f"[BRIDGE2][CANCEL] request_id={request_id} received")
         self._resolve_user_confirm(request_id, False)
     except BridgeError as e:
         self._publish_alert(code=e.code, message=e.reason, severity="warning", related_request_id=request_id)

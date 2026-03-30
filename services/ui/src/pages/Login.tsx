@@ -16,7 +16,7 @@ export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }
 
   const finishLogin = (u: CardAuthResp) => {
     setUser(u);
-    onLogin({ role: u.role === "admin" ? "admin" : "user", userId: u.user_id, name: `${u.first_name} ${u.last_name}` });
+    onLogin({ role: u.role === "admin" ? "admin" : "user", userId: u.user_id, name: `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() });
   };
 
   const loginWithCardId = async (cardIdRaw: string) => {

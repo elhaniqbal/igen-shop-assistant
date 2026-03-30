@@ -8,6 +8,8 @@ export const EP = {
   authSessionMe: "/api/auth/session/me",
   authSessionLogout: "/api/auth/session/logout",
 
+  catalog: "/api/catalog",
+
   dispense: "/api/dispense",
   dispenseStatus: (batchId: string) => `/api/dispense/${encodeURIComponent(batchId)}/status`,
   dispenseRequestConfirm: (requestId: string) => `/api/dispense/requests/${encodeURIComponent(requestId)}/confirm`,
@@ -29,6 +31,7 @@ export const EP = {
   adminAssignToolTag: (toolItemId: string) => `/api/admin/tools/items/${encodeURIComponent(toolItemId)}/tag`,
   adminLoans: "/api/admin/loans",
   adminLoan: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}`,
+  adminLoanExtend: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}/extend`,
   adminLoanSendOverdueEmail: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}/send-overdue-email`,
   adminEvents: "/api/admin/events",
   adminUsage: "/api/admin/metrics/usage",
@@ -58,4 +61,6 @@ export const EP = {
   adminCronRunHealthcheck: "/api/admin/cron/run-healthcheck",
   adminCronRunEmailTest: "/api/admin/cron/run-email-test",
   adminCronAlertRecipients: "/api/admin/cron/alert-recipients",
-};
+  // 🔴 FIX: ADMIN CONFIRM ENDPOINT
+  adminLoanConfirm: (loanId: string) => `/api/admin/loans/${loanId}/confirm`,
+}

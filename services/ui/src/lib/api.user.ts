@@ -2,89 +2,98 @@ import { http } from "./api";
 import { EP } from "./endpoints";
 
 export type RfidKind = "card" | "tool";
-export type RfidSetModeReq = { reader_id: string; mode: RfidKind };
-export type RfidScan = { card_id?: string; tag_id?: string; uid?: string; ts?: string; reader_id?: string };
-export type RfidConsumeResp = { ok: boolean; scan: RfidScan | null };
 
-export type CardAuthReq = { card_id: string };
-export type CardAuthResp = {
-  ok?: boolean;
-  user_id: string;
-  first_name: string;
-  last_name: string;
-  role: string;
-  status?: string;
+export type RfidScan = {
+  card_id?: string;
+  tag_id?: string;
+  uid?: string;
+  ts?: string;
 };
 
-export type DispenseItemReq = { tool_model_id: string; qty: number };
-export type DispenseBatchReq = { user_id?: string; items: DispenseItemReq[]; loan_period_hours: number };
-export type DispenseBatchResp = { batch_id: string; request_ids: string[] };
+export type CatalogRow = {
+  tool_model_id: string;
+  name: string;
+  category?: string;
+  description?: string;
+  total: number;
+  available: number;
+  checked_out: number;
+};
 
-export type HwStatus =
-  | "pending"
-  | "accepted"
-  | "in_progress"
-  | "waiting_user_confirm"
-  | "dispensed_ok"
-  | "confirmed"
-  | "pickup_mismatch"
-  | "return_ok"
-  | "succeeded"
-  | "failed";
+export type DispenseBatchResp = {
+  batch_id: string;
+  request_ids: string[];
+};
 
 export type BatchStatusItem = {
   request_id: string;
-  request_type?: "dispense" | "return";
-  tool_item_id?: string;
-  slot_id?: string;
-  hw_status: HwStatus;
-  hw_error_code?: string | null;
-  hw_error_reason?: string | null;
-  created_at?: string;
-  hw_updated_at?: string | null;
+  hw_status: string;
   stage?: string;
 };
-export type BatchStatusResp = { batch_id: string; items: BatchStatusItem[] };
+
+export type BatchStatusResp = {
+  batch_id: string;
+  items: BatchStatusItem[];
+};
+
 export type LoanRow = {
   loan_id: string;
   tool_item_id: string;
   tool_model_id: string;
   tool_name: string;
-  tool_category?: string | null;
   tool_tag_id: string;
   issued_at: string;
   due_at: string;
-  confirmed_at?: string | null;
-  returned_at?: string | null;
+  returned_at?: string;
   status: string;
 };
-export type LoansResp = { user_id: string; loans: LoanRow[] };
-export type ReturnItemReq = { tool_item_id: string };
-export type ReturnBatchReq = { user_id?: string; items: ReturnItemReq[] };
-export type ReturnBatchResp = { batch_id: string; request_ids: string[] };
 
 export const apiUser = {
-  rfidSetMode: (req: RfidSetModeReq) => http<{ ok: boolean }>(EP.rfidSetMode, { method: "POST", json: req }),
-  rfidConsume: (readerId: string, kind: RfidKind) => http<RfidConsumeResp>(EP.rfidConsume(readerId, kind)),
+  // RFID
+  rfidSetMode: (req: { reader_id: string; mode: RfidKind }) =>
+    http<{ ok: boolean }>(EP.rfidSetMode, { method: "POST", json: req }),
 
-  authCard: async (req: CardAuthReq) => {
-    try {
-      return await http<CardAuthResp>(EP.authSessionCard, { method: "POST", json: req });
-    } catch {
-      return await http<CardAuthResp>(EP.authCard, { method: "POST", json: req });
-    }
-  },
-  sessionMe: () => http<CardAuthResp>(EP.authSessionMe),
-  logout: () => http<{ ok: boolean }>(EP.authSessionLogout, { method: "POST" }),
+  rfidConsume: (readerId: string, kind: RfidKind) =>
+    http<{ ok: boolean; scan: RfidScan | null }>(
+      EP.rfidConsume(readerId, kind)
+    ),
 
-  dispense: (req: DispenseBatchReq) => http<DispenseBatchResp>(EP.dispense, { method: "POST", json: req }),
-  dispenseStatus: (batchId: string) => http<BatchStatusResp>(EP.dispenseStatus(batchId)),
-  dispenseConfirmRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(EP.dispenseRequestConfirm(requestId), { method: "POST" }),
-  dispenseCancelRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(EP.dispenseRequestCancel(requestId), { method: "POST" }),
+  // Auth
+  authCard: (req: { card_id: string }) =>
+    http(EP.authSessionCard, { method: "POST", json: req }),
 
-  loans: () => http<LoansResp>(EP.loans),
-  doReturn: (req: ReturnBatchReq) => http<ReturnBatchResp>(EP.doReturn, { method: "POST", json: req }),
-  returnStatus: (batchId: string) => http<BatchStatusResp>(EP.returnStatus(batchId)),
-  returnConfirmRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(EP.returnRequestConfirm(requestId), { method: "POST" }),
-  returnCancelRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(EP.returnRequestCancel(requestId), { method: "POST" }),
+  sessionMe: () => http(EP.authSessionMe),
+  logout: () => http(EP.authSessionLogout, { method: "POST" }),
+
+  // Catalog
+  catalog: () => http<CatalogRow[]>(EP.catalog),
+
+  // Dispense
+  dispense: (req: any) =>
+    http<DispenseBatchResp>(EP.dispense, { method: "POST", json: req }),
+
+  dispenseStatus: (batchId: string) =>
+    http<BatchStatusResp>(EP.dispenseStatus(batchId)),
+
+  dispenseConfirmRequest: (id: string) =>
+    http(EP.dispenseRequestConfirm(id), { method: "POST" }),
+
+  dispenseCancelRequest: (id: string) =>
+    http(EP.dispenseRequestCancel(id), { method: "POST" }),
+
+  // Loans
+  loans: () => http<{ loans: LoanRow[] }>(EP.loans),
+
+  // Return
+  doReturn: (req: any) =>
+    http(EP.doReturn, { method: "POST", json: req }),
+
+  returnStatus: (batchId: string) =>
+    http<BatchStatusResp>(EP.returnStatus(batchId)),
+
+  returnConfirmRequest: (id: string) =>
+    http(EP.returnRequestConfirm(id), { method: "POST" }),
+
+  returnCancelRequest: (id: string) =>
+    http(EP.returnRequestCancel(id), { method: "POST" }),
 };

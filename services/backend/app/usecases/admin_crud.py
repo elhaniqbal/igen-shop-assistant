@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -26,6 +26,18 @@ def _conflict(msg: str):
 def _not_found(msg: str):
     raise HTTPException(status_code=404, detail=msg)
 
+
+def _json_safe(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
 def log_event(
     db: Session,
     event_type: str,
@@ -42,7 +54,7 @@ def log_event(
         actor_id=actor_id,
         request_id=request_id,
         tool_item_id=tool_item_id,
-        payload_json=json.dumps(payload or {}),
+        payload_json=json.dumps(_json_safe(payload or {})),
     ))
 
 # ---------------- USERS ----------------
@@ -93,7 +105,7 @@ def get_user(db: Session, user_id: str):
 
 def patch_user(db: Session, user_id: str, body: AdminUserPatch):
     u = get_user(db, user_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
 
     if "card_id" in data and data["card_id"]:
         ex = db.execute(select(models.User).where(models.User.card_id == data["card_id"])).scalar_one_or_none()
@@ -151,7 +163,7 @@ def get_tool_model(db: Session, tool_model_id: str):
 
 def patch_tool_model(db: Session, tool_model_id: str, body: AdminToolModelPatch):
     tm = get_tool_model(db, tool_model_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
     for k, v in data.items():
         setattr(tm, k, v)
     log_event(db, "admin_tool_model_updated", payload={"tool_model_id": tool_model_id, "patch": data})
@@ -220,7 +232,7 @@ def get_tool_item(db: Session, tool_item_id: str):
 
 def patch_tool_item(db: Session, tool_item_id: str, body: AdminToolItemPatch):
     ti = get_tool_item(db, tool_item_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
 
     if "tool_model_id" in data and data["tool_model_id"]:
         if not db.get(models.ToolModel, data["tool_model_id"]):
@@ -307,9 +319,16 @@ def get_loan(db: Session, loan_id: str):
 
 def patch_loan(db: Session, loan_id: str, body: AdminLoanPatch):
     loan = get_loan(db, loan_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
     for k, v in data.items():
         setattr(loan, k, v)
+
+    if getattr(loan, "due_at", None) is not None and getattr(loan, "returned_at", None) is None:
+        now_dt = utcnow()
+        if loan.due_at < now_dt:
+            loan.status = "overdue"
+        elif loan.status == "overdue":
+            loan.status = "active"
 
     log_event(db, "admin_loan_updated", payload={"loan_id": loan_id, "patch": data}, tool_item_id=loan.tool_item_id)
     db.commit()
