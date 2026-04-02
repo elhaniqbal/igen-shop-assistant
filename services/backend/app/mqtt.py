@@ -24,7 +24,6 @@ SUB_TOPICS = [
     "igen/evt/system/fault",
     "igen/evt/system/status",
     "igen/evt/admin_test/motor",
-    "igen/evt/cake/home",
     "igen/evt/machine/alert",
     "igen/evt/machine/status",
     "igen/evt/admin/manual",
@@ -36,7 +35,13 @@ SUB_TOPICS = [
 
 def _now() -> datetime:
     return datetime.now()
-
+    
+def _clear_tool_from_live_slots(db, tool_item_id: str):
+    rows = db.execute(
+        select(models.CakeSlotState).where(models.CakeSlotState.tool_item_id == tool_item_id)
+    ).scalars().all()
+    for row in rows:
+        row.tool_item_id = None
 
 def _publish(topic: str, payload: dict, qos: int = 1):
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -121,7 +126,12 @@ class MqttBus:
 
 @with_db
 def _handle_mqtt_message(db, topic: str, payload: dict):
-    db.add(models.Event(event_type=f"mqtt:{topic}", payload_json=json.dumps(payload)))
+    db.add(models.Event(
+        event_type=f"mqtt:{topic}",
+        request_id=payload.get("request_id"),
+        tool_item_id=payload.get("tool_item_id"),
+        payload_json=json.dumps(payload),
+    ))
     db.commit()
     dispatch_mqtt(db, topic, payload)
 
@@ -177,12 +187,12 @@ def handle_evt_dispense(db, payload: dict):
         tool = db.get(models.ToolItem, req.tool_item_id)
         if tool:
             slot = parse_slot_index(req.slot_id)
-            set_cake_current_slot(db, tool.cake_id, slot)
-            state = db.get(models.CakeSlotState, {"cake_id": tool.cake_id, "slot_index": slot})
-            if state is None:
-                state = models.CakeSlotState(cake_id=tool.cake_id, slot_index=slot, tool_item_id=None)
-                db.add(state)
-            state.tool_item_id = None
+            final_slot = int(payload.get("final_current_slot", slot))
+
+            # Clear this tool from any live slot rows first
+            _clear_tool_from_live_slots(db, req.tool_item_id)
+
+            set_cake_current_slot(db, tool.cake_id, final_slot)
             db.commit()
 
         existing_loan = db.execute(
@@ -239,12 +249,26 @@ def handle_evt_return(db, payload: dict):
         tool = db.get(models.ToolItem, req.tool_item_id)
         if tool:
             slot = parse_slot_index(req.slot_id)
-            set_cake_current_slot(db, tool.cake_id, slot)
+            final_slot = int(payload.get("final_current_slot", slot))
+            print(
+                f"[MQTT][RETURN] request_id={request_id} cake={tool.cake_id} "
+                f"target_slot={slot} final_current_slot={payload.get('final_current_slot')} "
+                f"resolved_final_slot={final_slot}"
+            )
+
+            _clear_tool_from_live_slots(db, req.tool_item_id)
+
             state = db.get(models.CakeSlotState, {"cake_id": tool.cake_id, "slot_index": slot})
             if state is None:
-                state = models.CakeSlotState(cake_id=tool.cake_id, slot_index=slot, tool_item_id=req.tool_item_id)
+                state = models.CakeSlotState(
+                    cake_id=tool.cake_id,
+                    slot_index=slot,
+                    tool_item_id=req.tool_item_id,
+                )
                 db.add(state)
             state.tool_item_id = req.tool_item_id
+
+            set_cake_current_slot(db, tool.cake_id, final_slot)
             db.commit()
 
         loan = db.execute(
@@ -269,7 +293,6 @@ def handle_evt_return(db, payload: dict):
 
     if stage in {"succeeded", "failed"}:
         _release_next_request_in_batch(db, req.batch_id, "return", req.request_id)
-
 
 @mqtt_topic("igen/evt/rfid/card_scan")
 def handle_evt_card_scan(db, payload: dict):

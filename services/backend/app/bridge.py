@@ -180,6 +180,23 @@ def build_rotation_plan(cake_id: int, source_slot: int, target_slot: int) -> Rot
     )
 
 
+def build_bounded_return_exit_plan(cake_id: int, current_slot: int) -> RotationPlan:
+    current_slot = normalize_slot(current_slot)
+
+    if current_slot == 0:
+        raise BridgeError("RETURN_FROM_HOME_NOT_ALLOWED", "Return cannot start from home slot 0 in bounded mode")
+
+    target_slot = current_slot - 1
+    return RotationPlan(
+        cake_id=cake_id,
+        source_slot=current_slot,
+        target_slot=target_slot,
+        delta_slots=-1,
+        direction="CCW",
+        expected_signed_deg=-DEG_PER_SLOT,
+        script=build_rotation_script(cake_id, "CCW", 1),
+    )
+
 def cmd(topic: str):
     def deco(fn: CmdHandler) -> CmdHandler:
         Bridge2.CMD_HANDLERS[topic] = fn
@@ -348,6 +365,50 @@ class EncoderClient:
 
     def clear_zero(self, cake_id: int) -> str:
         return self._command(f"CLEARZERO cake={cake_id}")
+
+    def _parse_ok_kv(self, raw: str) -> dict:
+        parts = raw.split()
+        out: dict[str, str] = {}
+        for p in parts[1:]:  # skip leading OK
+            if "=" not in p:
+                continue
+            k, v = p.split("=", 1)
+            out[k.strip()] = v.strip()
+        return out
+
+    def read_angle_info(self, cake_id: int) -> dict:
+        raw = self._command(f"READ cake={cake_id}")
+        kv = self._parse_ok_kv(raw)
+        try:
+            return {
+                "cake_id": int(kv.get("cake", cake_id)),
+                "channel": int(kv["ch"]),
+                "raw": int(kv["raw"]),
+                "deg": float(kv["deg"]),
+                "zero_deg": float(kv["zero_deg"]),
+                "adj_deg": float(kv["adj_deg"]),
+                "source": "encoder_serial_read",
+            }
+        except Exception as e:
+            raise BridgeError("ENCODER_PARSE_FAIL", f"Could not parse READ response: {raw} ({e})")
+
+    def read_angle(self, cake_id: int) -> float:
+        info = self.read_angle_info(cake_id)
+        return float(info["adj_deg"])
+
+    def read_eeprom(self, cake_id: int) -> dict:
+        raw = self._command(f"READEEPROM cake={cake_id}")
+        kv = self._parse_ok_kv(raw)
+        try:
+            return {
+                "cake_id": int(kv.get("cake", cake_id)),
+                "zero_deg": float(kv["zero_deg"]),
+                "magic": kv.get("magic"),
+                "version": int(kv["version"]),
+                "source": "encoder_serial_eeprom",
+            }
+        except Exception as e:
+            raise BridgeError("ENCODER_PARSE_FAIL", f"Could not parse READEEPROM response: {raw} ({e})")
 
 
 class Bridge2:
@@ -626,8 +687,10 @@ class Bridge2:
         if WAIT_IDLE:
             self.moonraker.wait_until_idle(self.cfg.done_timeout_ms / 1000.0, IDLE_POLL_INTERVAL_S)
 
-    @with_timeout(max(5.0, MOONRAKER_HTTP_TIMEOUT_S + 5.0))
+    @with_timeout(max(15.0, MOONRAKER_HTTP_TIMEOUT_S + 5.0))
     def _run_gcode(self, request_id: str, script: str):
+        pretty = " | ".join(line.strip() for line in script.splitlines() if line.strip())
+        print(f"[BRIDGE2][RID={request_id}] gcode -> {pretty}")
         self.moonraker.send_gcode(script)
         self._wait_idle_if_needed()
 
@@ -729,11 +792,38 @@ class Bridge2:
 
     def _execute_rotation_plan(self, request_id: str, plan: RotationPlan):
         if plan.delta_slots == 0:
+            print(
+                f"[BRIDGE2][RID={request_id}] skip raw cake rotation cake={plan.cake_id} "
+                f"from={plan.source_slot} to={plan.target_slot} delta=0"
+            )
             return
+        print(
+            f"[BRIDGE2][RID={request_id}] raw cake rotation cake={plan.cake_id} "
+            f"from={plan.source_slot} to={plan.target_slot} "
+            f"delta_slots={plan.delta_slots} dir={plan.direction}"
+        )
         before = self._read_encoder_angle_if_enabled(plan.cake_id)
         self._run_gcode(request_id, plan.script)
         after = self._read_encoder_angle_if_enabled(plan.cake_id)
         self._verify_rotation_plan(request_id, plan, before, after)
+
+    def _execute_dispense_rotation(self, request_id: str, plan: RotationPlan):
+        print(
+            f"[BRIDGE2][RID={request_id}] dispense cake sequence cake={plan.cake_id} "
+            f"target_slot={plan.target_slot}: SA_ROTATE_TO_SLOT -> SA_ROTATE_TO_DISPENSE"
+        )
+        before = self._read_encoder_angle_if_enabled(plan.cake_id)
+        self._run_gcode(request_id, f"SA_ROTATE_TO_SLOT CAKE={plan.cake_id} SLOT={plan.target_slot}")
+        self._run_gcode(request_id, f"SA_ROTATE_TO_DISPENSE CAKE={plan.cake_id} SLOT={plan.target_slot}")
+        after = self._read_encoder_angle_if_enabled(plan.cake_id)
+        self._verify_rotation_plan(request_id, plan, before, after)
+
+    def _execute_return_settle(self, request_id: str, cake_id: int, target_slot: int):
+        print(
+            f"[BRIDGE2][RID={request_id}] return settle cake={cake_id} target_slot={target_slot} "
+            f"using SA_ROTATE_TO_SLOT"
+        )
+        self._run_gcode(request_id, f"SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={target_slot}")
 
     def _dispatch_async(self, target, *args):
         threading.Thread(target=target, args=args, daemon=True).start()
@@ -799,43 +889,149 @@ class Bridge2:
                     raise BridgeError("SIM_FAIL", "simulated failure")
 
                 if action == "dispense":
+                    timed_out_unconfirmed = False
+                    cake_id = int(payload.get("cake_id"))
+                    source_slot = int(payload.get("current_slot", 0))
+                    target_slot = int(payload.get("target_slot", 0))
+
+                    print(
+                        f"[BRIDGE2][SIM][DISPENSE][RID={request_id}] "
+                        f"Cake {cake_id}: slot {source_slot} → slot {target_slot}"
+                    )
+
                     self._publish_stage(action, request_id, "move_to_cake")
                     time.sleep(SIM_MIN_TIME_S)
+
                     self._publish_stage(action, request_id, "rotate_cake")
+                    print(
+                        f"[BRIDGE2][SIM][DISPENSE][RID={request_id}] "
+                        f"would run: SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={target_slot} "
+                        f"then SA_ROTATE_TO_DISPENSE CAKE={cake_id} SLOT={target_slot}"
+                    )
                     time.sleep(SIM_MIN_TIME_S)
+
                     self._publish_stage(action, request_id, "move_to_door")
                     time.sleep(SIM_MIN_TIME_S)
-                    self._simulate_confirm_wait(
-                        request_id,
-                        action,
-                        "waiting_user_confirm",
-                        DOOR_CONFIRM_TIMEOUT_S,
-                        "Waiting for user to take tool and confirm",
-                    )
+
+                    self._publish_stage(action, request_id, "waiting_user_confirm")
+                    try:
+                        self._wait_for_user_confirm(
+                            request_id,
+                            action,
+                            "waiting_user_confirm",
+                            DOOR_CONFIRM_TIMEOUT_S,
+                            {"message": "Waiting for user to take tool and confirm", "simulated": True},
+                        )
+                    except BridgeError as e:
+                        if e.code == "USER_CONFIRM_TIMEOUT":
+                            timed_out_unconfirmed = True
+                            print(f"[BRIDGE2][SIM][DISPENSE][RID={request_id}] timeout -> completing as unconfirmed")
+                        else:
+                            raise
+
                     self._publish_stage(action, request_id, "park")
                     time.sleep(SIM_MIN_TIME_S)
+
+                    final_current_slot = int(payload.get("target_slot", 0))
+                    print(
+                        f"[BRIDGE2][SIM][DISPENSE][RID={request_id}] "
+                        f"publishing success cake={cake_id} source_slot={source_slot} "
+                        f"target_slot={target_slot} final_current_slot={final_current_slot}"
+                    )
+                    self._publish_stage(
+                        action,
+                        request_id,
+                        "succeeded",
+                        details={
+                            "cake_id": cake_id,
+                            "source_slot": source_slot,
+                            "target_slot": target_slot,
+                            "final_current_slot": final_current_slot,
+                            "auto_unconfirmed": timed_out_unconfirmed,
+                        },
+                    )
 
                 elif action == "return":
+                    cake_id = int(payload.get("cake_id"))
+                    current_slot = int(payload.get("current_slot", 0))
+                    target_slot = int(payload.get("target_slot", 0))
+
+                    if current_slot == 0:
+                        if target_slot != 5:
+                            raise BridgeError(
+                                "RETURN_TARGET_MISMATCH",
+                                f"Return from home must target slot 5 (got target={target_slot})",
+                            )
+                        final_current_slot = 5
+                        print(
+                            f"[BRIDGE2][SIM][RETURN][RID={request_id}] "
+                            f"Cake {cake_id}: HOME(0) -> insert at slot 5, stay at slot 5"
+                        )
+                    else:
+                        if target_slot != current_slot:
+                            raise BridgeError(
+                                "RETURN_TARGET_MISMATCH",
+                                f"Return target_slot must equal current_slot in bounded mode (current={current_slot}, target={target_slot})",
+                            )
+                        final_current_slot = current_slot - 1
+                        print(
+                            f"[BRIDGE2][SIM][RETURN][RID={request_id}] "
+                            f"Cake {cake_id}: insert at slot {current_slot}, then rotate to slot {final_current_slot}"
+                        )
+
                     self._publish_stage(action, request_id, "move_to_door")
                     time.sleep(SIM_MIN_TIME_S)
-                    self._simulate_confirm_wait(
-                        request_id,
-                        action,
-                        "waiting_user_insert",
-                        DOOR_CONFIRM_TIMEOUT_S,
-                        "Waiting for user to place the tool in the slice and confirm",
-                    )
+
+                    self._publish_stage(action, request_id, "waiting_user_insert")
+                    try:
+                        self._wait_for_user_confirm(
+                            request_id,
+                            action,
+                            "waiting_user_insert",
+                            DOOR_CONFIRM_TIMEOUT_S,
+                            {"message": "Waiting for user to place the tool in the slice and confirm", "simulated": True},
+                        )
+                    except BridgeError as e:
+                        if e.code == "USER_CONFIRM_TIMEOUT":
+                            print(f"[BRIDGE2][SIM][RETURN][RID={request_id}] timeout -> parking and failing")
+                            self._publish_stage(action, request_id, "park")
+                            time.sleep(SIM_MIN_TIME_S)
+                            raise BridgeError("USER_INSERT_TIMEOUT", "Timed out waiting for user to place the tool in the slice")
+                        raise
+
                     self._publish_stage(action, request_id, "move_to_cake")
                     time.sleep(SIM_MIN_TIME_S)
-                    self._publish_stage(action, request_id, "rotate_cake")
-                    time.sleep(SIM_MIN_TIME_S)
+
+                    if current_slot != 0:
+                        self._publish_stage(action, request_id, "rotate_cake")
+                        print(
+                            f"[BRIDGE2][SIM][RETURN][RID={request_id}] "
+                            f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={final_current_slot}"
+                        )
+                        time.sleep(SIM_MIN_TIME_S)
+
                     self._publish_stage(action, request_id, "park")
                     time.sleep(SIM_MIN_TIME_S)
 
+                    print(
+                        f"[BRIDGE2][SIM][RETURN][RID={request_id}] "
+                        f"publishing success cake={cake_id} source_slot={current_slot} "
+                        f"target_slot={target_slot} final_current_slot={final_current_slot}"
+                    )
+                    self._publish_stage(
+                        action,
+                        request_id,
+                        "succeeded",
+                        details={
+                            "cake_id": cake_id,
+                            "source_slot": current_slot,
+                            "target_slot": target_slot,
+                            "final_current_slot": final_current_slot,
+                        },
+                    )
                 else:
                     raise BridgeError("BAD_PAYLOAD", f"unsupported action: {action}")
 
-                self._publish_stage(action, request_id, "succeeded")
                 self._publish_machine_status({"last_request_id": request_id, "simulated": True})
 
             except BridgeError as e:
@@ -868,6 +1064,18 @@ class Bridge2:
                 self._sim_set_vertical_home("right")
             elif action == "move_to_door":
                 self._sim_state["state"] = "idle"
+            elif action == "set_cake_zero":
+                cake_id = int(payload.get("cake_id", 0) or 0)
+                self._sim_state["active_cake_id"] = cake_id
+                self._sim_state["state"] = "idle"
+                self._publish_stage(
+                    "admin_manual",
+                    rid,
+                    "succeeded",
+                    details={"cake_id": cake_id, "action": action},
+                )
+                self._publish_machine_status({"last_request_id": rid, "active_cake_id": cake_id})
+                return
             elif action == "move_to_cake":
                 self._sim_state["active_cake_id"] = int(payload.get("cake_id", 0) or 0)
             elif action == "move_cake":
@@ -928,12 +1136,20 @@ class Bridge2:
             self._sim_state["active_cake_id"] = motor_id
 
             if action_name == "dispense":
+                print(
+                    f"[BRIDGE2][SIM][MOTOR_TEST][RID={request_id}] "
+                    f"would run: SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=1 then SA_ROTATE_TO_DISPENSE CAKE={motor_id} SLOT=1"
+                )
                 self._sleep_with_log(request_id, 0.6, "sim move to cake")
                 self._sleep_with_log(request_id, 0.6, "sim rotate")
                 self._sleep_with_log(request_id, 0.6, "sim move to door")
                 self._sleep_with_log(request_id, 5.0, "sim door dwell")
                 self._sleep_with_log(request_id, 0.6, "sim park from door")
             elif action_name == "return":
+                print(
+                    f"[BRIDGE2][SIM][MOTOR_TEST][RID={request_id}] "
+                    f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=0"
+                )
                 self._sleep_with_log(request_id, 0.6, "sim move to door")
                 self._sleep_with_log(request_id, 5.0, "sim door dwell")
                 self._sleep_with_log(request_id, 0.6, "sim move to cake")
@@ -972,7 +1188,9 @@ class Bridge2:
             self._publish_stage(action, request_id, "in_progress")
 
             if action == "dispense":
+                timed_out_unconfirmed = False
                 plan = self._build_dispense_plan(payload)
+
                 self._publish_stage(
                     action,
                     request_id,
@@ -996,70 +1214,161 @@ class Bridge2:
                         "target_slot": plan.target_slot,
                     },
                 )
-                self._execute_rotation_plan(request_id, plan)
+                self._execute_dispense_rotation(request_id, plan)
 
                 self._publish_stage(action, request_id, "move_to_door")
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
 
                 self._publish_stage(action, request_id, "waiting_user_confirm")
-                self._wait_for_user_confirm(
-                    request_id,
-                    action,
-                    "door_take_confirm",
-                    DOOR_CONFIRM_TIMEOUT_S,
-                    {"message": "Waiting for user to take tool and confirm"},
-                )
+                try:
+                    self._wait_for_user_confirm(
+                        request_id,
+                        action,
+                        "door_take_confirm",
+                        DOOR_CONFIRM_TIMEOUT_S,
+                        {"message": "Waiting for user to take tool and confirm"},
+                    )
+                except BridgeError as e:
+                    if e.code == "USER_CONFIRM_TIMEOUT":
+                        timed_out_unconfirmed = True
+                        print(
+                            f"[BRIDGE2][DISPENSE][RID={request_id}] "
+                            f"user inactive for {DOOR_CONFIRM_TIMEOUT_S}s -> completing as unconfirmed"
+                        )
+                    else:
+                        raise
 
                 self._publish_stage(action, request_id, "park")
                 self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
+                print(
+                    f"[BRIDGE2][DISPENSE][RID={request_id}] "
+                    f"publishing success cake={plan.cake_id} source_slot={plan.source_slot} "
+                    f"target_slot={plan.target_slot} final_current_slot={plan.target_slot}"
+                )
+                self._publish_stage(
+                    action,
+                    request_id,
+                    "succeeded",
+                    details={
+                        "cake_id": plan.cake_id,
+                        "source_slot": plan.source_slot,
+                        "target_slot": plan.target_slot,
+                        "final_current_slot": plan.target_slot,
+                        "auto_unconfirmed": timed_out_unconfirmed,
+                    },
+                )
 
             elif action == "return":
-                plan = self._build_return_plan(payload)
+                cake_id = self._require_int(payload, "cake_id")
+                current_slot = self._require_int(payload, "current_slot")
+                target_slot = self._require_int(payload, "target_slot")
+
+                if current_slot == 0:
+                    if target_slot != 5:
+                        raise BridgeError(
+                            "RETURN_TARGET_MISMATCH",
+                            f"Return from home must target slot 5 (got target={target_slot})",
+                        )
+                    exit_plan = RotationPlan(
+                        cake_id=cake_id,
+                        source_slot=5,
+                        target_slot=5,
+                        delta_slots=0,
+                        direction="CW",
+                        expected_signed_deg=0.0,
+                        script="",
+                    )
+                    final_current_slot = 5
+                    print(
+                        f"[BRIDGE2][RETURN][RID={request_id}] "
+                        f"Cake {cake_id}: HOME(0) -> insert at slot 5, stay at slot 5"
+                    )
+                else:
+                    if target_slot != current_slot:
+                        raise BridgeError(
+                            "RETURN_TARGET_MISMATCH",
+                            f"Return target_slot must equal current_slot in bounded mode (current={current_slot}, target={target_slot})",
+                        )
+                    exit_plan = build_bounded_return_exit_plan(cake_id, current_slot)
+                    final_current_slot = exit_plan.target_slot
+                    print(
+                        f"[BRIDGE2][RETURN][RID={request_id}] "
+                        f"Cake {cake_id}: insert at slot {current_slot}, then rotate to slot {final_current_slot}"
+                    )
 
                 self._publish_stage(action, request_id, "move_to_door")
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
 
                 self._publish_stage(action, request_id, "waiting_user_insert")
-                self._wait_for_user_confirm(
-                    request_id,
-                    action,
-                    "door_insert_confirm",
-                    DOOR_CONFIRM_TIMEOUT_S,
-                    {"message": "Waiting for user to place the tool in the slice and confirm"},
-                )
+                try:
+                    self._wait_for_user_confirm(
+                        request_id,
+                        action,
+                        "door_insert_confirm",
+                        DOOR_CONFIRM_TIMEOUT_S,
+                        {"message": "Waiting for user to place the tool in the slice and confirm"},
+                    )
+                except BridgeError as e:
+                    if e.code == "USER_CONFIRM_TIMEOUT":
+                        print(
+                            f"[BRIDGE2][RETURN][RID={request_id}] "
+                            f"user did not place item in time -> parking and failing"
+                        )
+                        self._publish_stage(action, request_id, "park")
+                        self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
+                        raise BridgeError("USER_INSERT_TIMEOUT", "Timed out waiting for user to place the tool in the slice")
+                    raise
 
                 self._publish_stage(
                     action,
                     request_id,
                     "move_to_cake",
                     details={
-                        "cake_id": plan.cake_id,
-                        "source_slot": plan.source_slot,
-                        "target_slot": plan.target_slot,
+                        "cake_id": cake_id,
+                        "source_slot": current_slot,
+                        "target_slot": target_slot,
                     },
                 )
-                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={plan.cake_id}")
+                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={cake_id}")
 
-                self._publish_stage(
-                    action,
-                    request_id,
-                    "rotate_cake",
-                    details={
-                        "cake_id": plan.cake_id,
-                        "direction": plan.direction,
-                        "source_slot": plan.source_slot,
-                        "target_slot": plan.target_slot,
-                    },
-                )
-                self._execute_rotation_plan(request_id, plan)
+                if exit_plan.delta_slots != 0:
+                    self._publish_stage(
+                        action,
+                        request_id,
+                        "rotate_cake",
+                        details={
+                            "cake_id": cake_id,
+                            "direction": exit_plan.direction,
+                            "source_slot": exit_plan.source_slot,
+                            "target_slot": exit_plan.target_slot,
+                        },
+                    )
+                    self._execute_rotation_plan(request_id, exit_plan)
+                    self._execute_return_settle(request_id, cake_id, exit_plan.target_slot)
 
                 self._publish_stage(action, request_id, "park")
                 self._run_gcode(request_id, "SA_PARK_FROM_CAKE")
 
+                print(
+                    f"[BRIDGE2][RETURN][RID={request_id}] "
+                    f"publishing success cake={cake_id} source_slot={current_slot} "
+                    f"target_slot={target_slot} final_current_slot={final_current_slot}"
+                )
+                self._publish_stage(
+                    action,
+                    request_id,
+                    "succeeded",
+                    details={
+                        "cake_id": cake_id,
+                        "source_slot": current_slot,
+                        "target_slot": target_slot,
+                        "final_current_slot": final_current_slot,
+                    },
+                )
+
             else:
                 raise BridgeError("BAD_PAYLOAD", f"unsupported action: {action}")
 
-            self._publish_stage(action, request_id, "succeeded")
             self._publish_machine_status()
 
         except BridgeError as e:
@@ -1117,7 +1426,7 @@ class Bridge2:
             if action_name == "dispense":
                 plan = build_rotation_plan(motor_id, 0, 1)
                 self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={motor_id}")
-                self._execute_rotation_plan(request_id, plan)
+                self._execute_dispense_rotation(request_id, plan)
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
                 self._sleep_with_log(request_id, 5.0, "test dispense door dwell")
                 self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
@@ -1127,6 +1436,7 @@ class Bridge2:
                 self._sleep_with_log(request_id, 5.0, "test return door dwell")
                 self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={motor_id}")
                 self._execute_rotation_plan(request_id, plan)
+                self._execute_return_settle(request_id, motor_id, plan.target_slot)
                 self._run_gcode(request_id, "SA_PARK_FROM_CAKE")
             else:
                 raise BridgeError("BAD_PAYLOAD", f"unsupported motor test action: {action_name}")
@@ -1186,6 +1496,15 @@ class Bridge2:
                 if self.encoder:
                     self.encoder.zero(cake_id)
                 self._run_gcode(rid, f"SA_CAKE_SET_ZERO CAKE={cake_id}")
+                print("[BRIDGE][REAL] CAKE SET COMMAND SENT")
+                self._publish_stage(
+                    "admin_manual",
+                    rid,
+                    "succeeded",
+                    details={"cake_id": cake_id, "action": action},
+                )
+                self._publish_machine_status({"last_request_id": rid, "active_cake_id": cake_id})
+                return
             elif action == "jog_axis":
                 axis = str(payload.get("axis", "")).lower()
                 direction = str(payload.get("direction", "")).lower()
@@ -1247,8 +1566,10 @@ class Bridge2:
     def _execute_admin_cal(self, payload: dict):
         rid = str(payload["request_id"])
         action = str(payload.get("action", "")).lower()
+        details = None
         try:
             self._publish_stage("admin_calibration", rid, "accepted")
+
             if action == "set_variable":
                 self._run_gcode(rid, f"SAVE_VARIABLE VARIABLE={payload['variable']} VALUE={payload['value']}")
             elif action in {"set_door_x", "set_door_distance"}:
@@ -1261,17 +1582,50 @@ class Bridge2:
             elif action == "encoder_set_zero":
                 if not self.encoder:
                     raise BridgeError("ENCODER_DISABLED", "encoder serial client is not enabled")
-                self.encoder.set_zero(self._require_int(payload, "cake_id"), float(payload["deg"]))
+                cake_id = self._require_int(payload, "cake_id")
+                raw = self.encoder.set_zero(cake_id, float(payload["deg"]))
+                details = {
+                    "action": action,
+                    "cake_id": cake_id,
+                    "result": raw,
+                }
             elif action == "encoder_clear_zero":
                 if not self.encoder:
                     raise BridgeError("ENCODER_DISABLED", "encoder serial client is not enabled")
-                self.encoder.clear_zero(self._require_int(payload, "cake_id"))
+                cake_id = self._require_int(payload, "cake_id")
+                raw = self.encoder.clear_zero(cake_id)
+                details = {
+                    "action": action,
+                    "cake_id": cake_id,
+                    "result": raw,
+                }
+            elif action == "encoder_read_eeprom":
+                if not self.encoder:
+                    raise BridgeError("ENCODER_DISABLED", "encoder serial client is not enabled")
+                cake_id = self._require_int(payload, "cake_id")
+                details = {
+                    "action": action,
+                    "cake_id": cake_id,
+                    "eeprom": self.encoder.read_eeprom(cake_id),
+                }
+            elif action in {"encoder_read", "encoder_read_angle"}:
+                if not self.encoder:
+                    raise BridgeError("ENCODER_DISABLED", "encoder serial client is not enabled")
+                cake_id = self._require_int(payload, "cake_id")
+                details = {
+                    "action": action,
+                    "cake_id": cake_id,
+                    "reading": self.encoder.read_angle_info(cake_id),
+                }
             else:
                 raise BridgeError("BAD_PAYLOAD", f"unsupported admin calibration action: {action}")
 
-            self._publish_stage("admin_calibration", rid, "succeeded")
+            self._publish_stage("admin_calibration", rid, "succeeded", details=details)
         except BridgeError as e:
-            self._publish_stage("admin_calibration", rid, "failed", error_code=e.code, error_reason=e.reason)
+            self._publish_stage("admin_calibration", rid, "failed", error_code=e.code, error_reason=e.reason, details={
+                "action": action,
+                "cake_id": payload.get("cake_id"),
+            })
             self._publish_alert(code=e.code, message=e.reason, severity="error", related_request_id=rid)
 
 
@@ -1315,8 +1669,36 @@ def handle_admin_machine(self: Bridge2, payload: dict):
 @dedup_cmd("request_id")
 def handle_admin_cal(self: Bridge2, payload: dict):
     if self.cfg.mode == "SIM":
-        self._publish_stage("admin_calibration", str(payload["request_id"]), "accepted")
-        self._publish_stage("admin_calibration", str(payload["request_id"]), "succeeded")
+        rid = str(payload["request_id"])
+        action = str(payload.get("action", "")).lower()
+        cake_id = int(payload.get("cake_id", 0) or 0)
+
+        self._publish_stage("admin_calibration", rid, "accepted")
+
+        details = {"action": action}
+        if cake_id:
+            details["cake_id"] = cake_id
+
+        if action == "encoder_read_eeprom":
+            details["eeprom"] = {
+                "cake_id": cake_id,
+                "zero_deg": 0.0,
+                "magic": "0x43414B45",
+                "version": 1,
+                "source": "sim",
+            }
+        elif action in {"encoder_read", "encoder_read_angle"}:
+            details["reading"] = {
+                "cake_id": cake_id,
+                "channel": cake_id - 1 if cake_id > 0 else None,
+                "raw": 0,
+                "deg": 0.0,
+                "zero_deg": 0.0,
+                "adj_deg": 0.0,
+                "source": "sim",
+            }
+
+        self._publish_stage("admin_calibration", rid, "succeeded", details=details)
         self._publish_machine_status({"last_request_id": str(payload.get("request_id"))})
     else:
         self._dispatch_async(self._execute_admin_cal, payload)

@@ -15,7 +15,13 @@ static constexpr uint32_t EEPROM_MAGIC = 0x43414B45; // 'CAKE'
 static constexpr uint16_t EEPROM_VERSION = 1;
 
 // Cake -> TCA9548 channel mapping.
-// Change these if your wiring differs.
+// Current mapping means:
+// cake=1 -> ch0
+// cake=2 -> ch1
+// cake=3 -> ch2
+// cake=4 -> ch3
+// cake=5 -> ch4
+// cake=6 -> ch5
 static const uint8_t CAKE_CHANNEL_MAP[NUM_CAKES] = {
   0, 1, 2, 3, 4, 5
 };
@@ -47,14 +53,21 @@ float rawToDeg(uint16_t raw) {
   return (static_cast<float>(raw & 0x0FFF) * 360.0f) / 4096.0f;
 }
 
-bool selectCakeChannel(uint8_t cakeIdx) {
-  if (cakeIdx >= NUM_CAKES) {
-    return false;
-  }
-  uint8_t channel = CAKE_CHANNEL_MAP[cakeIdx];
-  Wire.beginTransmission(TCA9548_ADDR);
-  Wire.write(1 << channel);
+bool i2cDevicePresent(uint8_t addr) {
+  Wire.beginTransmission(addr);
   return Wire.endTransmission() == 0;
+}
+
+bool selectMuxChannel(uint8_t ch) {
+  if (ch > 7) return false;
+  Wire.beginTransmission(TCA9548_ADDR);
+  Wire.write(1 << ch);
+  return Wire.endTransmission() == 0;
+}
+
+bool selectCakeChannel(uint8_t cakeIdx) {
+  if (cakeIdx >= NUM_CAKES) return false;
+  return selectMuxChannel(CAKE_CHANNEL_MAP[cakeIdx]);
 }
 
 void disableAllMuxChannels() {
@@ -63,31 +76,60 @@ void disableAllMuxChannels() {
   Wire.endTransmission();
 }
 
-bool readAs5600Raw(uint8_t cakeIdx, uint16_t &rawOut) {
-  if (!selectCakeChannel(cakeIdx)) {
-    return false;
-  }
-
+bool readAs5600RawFromSelectedChannel(uint16_t &rawOut) {
   Wire.beginTransmission(AS5600_ADDR);
   Wire.write(REG_RAW_ANGLE_HI);
   if (Wire.endTransmission(false) != 0) {
-    disableAllMuxChannels();
     return false;
   }
 
   const uint8_t want = 2;
   uint8_t got = Wire.requestFrom(static_cast<int>(AS5600_ADDR), static_cast<int>(want));
   if (got != want) {
-    disableAllMuxChannels();
     return false;
   }
 
   uint8_t hi = Wire.read();
   uint8_t lo = Wire.read();
-  disableAllMuxChannels();
-
   rawOut = ((static_cast<uint16_t>(hi) << 8) | lo) & 0x0FFF;
   return true;
+}
+
+bool readAs5600Raw(uint8_t cakeIdx, uint16_t &rawOut) {
+  if (!selectCakeChannel(cakeIdx)) {
+    return false;
+  }
+
+  bool ok = readAs5600RawFromSelectedChannel(rawOut);
+  disableAllMuxChannels();
+  return ok;
+}
+
+void cmdReadEeprom(const String &line) {
+  uint8_t cakeIdx;
+  if (!parseCake1Based(line, cakeIdx)) {
+    replyErr("BAD_ARG", "READEEPROM requires cake=<1..NUM_CAKES>");
+    return;
+  }
+
+  Serial.print("OK READEEPROM cake=");
+  Serial.print(cakeIdx + 1);
+  Serial.print(" zero_deg=");
+  Serial.print(g_state.zero_deg[cakeIdx], 3);
+  Serial.print(" magic=0x");
+  Serial.print(g_state.magic, HEX);
+  Serial.print(" version=");
+  Serial.println(g_state.version);
+}
+
+bool readAs5600RawByChannel(uint8_t ch, uint16_t &rawOut) {
+  if (!selectMuxChannel(ch)) {
+    return false;
+  }
+
+  bool ok = readAs5600RawFromSelectedChannel(rawOut);
+  disableAllMuxChannels();
+  return ok;
 }
 
 void saveState() {
@@ -115,11 +157,16 @@ void loadState() {
 }
 
 bool parseKeyValue(const String &line, const String &key, String &valueOut) {
-  int start = line.indexOf(key + "=");
+  String keyUpper = key;
+  keyUpper.toUpperCase();
+
+  int start = line.indexOf(keyUpper + "=");
   if (start < 0) return false;
-  start += key.length() + 1;
+
+  start += keyUpper.length() + 1;
   int end = line.indexOf(' ', start);
   if (end < 0) end = line.length();
+
   valueOut = line.substring(start, end);
   valueOut.trim();
   return valueOut.length() > 0;
@@ -131,6 +178,15 @@ bool parseCake1Based(const String &line, uint8_t &cakeIdx) {
   int cake1 = v.toInt();
   if (cake1 < 1 || cake1 > NUM_CAKES) return false;
   cakeIdx = static_cast<uint8_t>(cake1 - 1);
+  return true;
+}
+
+bool parseChannel(const String &line, uint8_t &ch) {
+  String v;
+  if (!parseKeyValue(line, "ch", v)) return false;
+  int parsed = v.toInt();
+  if (parsed < 0 || parsed > 7) return false;
+  ch = static_cast<uint8_t>(parsed);
   return true;
 }
 
@@ -173,6 +229,45 @@ void cmdMap() {
   Serial.println();
 }
 
+void cmdI2CScan() {
+  Serial.print("OK I2CSCAN");
+  bool any = false;
+  for (uint8_t addr = 1; addr < 127; ++addr) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.print(" 0x");
+      if (addr < 16) Serial.print("0");
+      Serial.print(addr, HEX);
+      any = true;
+    }
+  }
+  if (!any) Serial.print(" none");
+  Serial.println();
+}
+
+void cmdMuxScan() {
+  if (!i2cDevicePresent(TCA9548_ADDR)) {
+    replyErr("MUX_MISSING", "TCA9548 not detected at 0x70");
+    return;
+  }
+
+  Serial.print("OK MUXSCAN mux=0x70");
+  for (uint8_t ch = 0; ch < 8; ++ch) {
+    bool muxOk = selectMuxChannel(ch);
+    bool asOk = false;
+    if (muxOk) {
+      asOk = i2cDevicePresent(AS5600_ADDR);
+    }
+    disableAllMuxChannels();
+
+    Serial.print(" ch");
+    Serial.print(ch);
+    Serial.print("=");
+    Serial.print(asOk ? "AS5600" : "-");
+  }
+  Serial.println();
+}
+
 void cmdRead(const String &line) {
   uint8_t cakeIdx;
   if (!parseCake1Based(line, cakeIdx)) {
@@ -192,6 +287,8 @@ void cmdRead(const String &line) {
 
   Serial.print("OK READ cake=");
   Serial.print(cakeIdx + 1);
+  Serial.print(" ch=");
+  Serial.print(CAKE_CHANNEL_MAP[cakeIdx]);
   Serial.print(" raw=");
   Serial.print(raw);
   Serial.print(" deg=");
@@ -200,6 +297,29 @@ void cmdRead(const String &line) {
   Serial.print(zeroDeg, 3);
   Serial.print(" adj_deg=");
   Serial.println(adjDeg, 3);
+}
+
+void cmdReadCh(const String &line) {
+  uint8_t ch;
+  if (!parseChannel(line, ch)) {
+    replyErr("BAD_ARG", "READCH requires ch=<0..7>");
+    return;
+  }
+
+  uint16_t raw = 0;
+  if (!readAs5600RawByChannel(ch, raw)) {
+    replyErr("READ_FAIL", "AS5600 read failed on channel");
+    return;
+  }
+
+  float deg = rawToDeg(raw);
+
+  Serial.print("OK READCH ch=");
+  Serial.print(ch);
+  Serial.print(" raw=");
+  Serial.print(raw);
+  Serial.print(" deg=");
+  Serial.println(deg, 3);
 }
 
 void cmdZero(const String &line) {
@@ -274,7 +394,7 @@ void cmdDumpZero() {
 }
 
 void cmdHelp() {
-  Serial.println("OK HELP cmds=PING,STATUS,MAP,READ cake=N,ZERO cake=N,SETZERO cake=N deg=F,CLEARZERO cake=N,DUMPZERO,HELP");
+  Serial.println("OK HELP cmds=PING,STATUS,MAP,I2CSCAN,MUXSCAN,READ cake=N,READCH ch=N,ZERO cake=N,SETZERO cake=N deg=F,CLEARZERO cake=N,DUMPZERO,HELP");
 }
 
 void handleCommand(String line) {
@@ -289,6 +409,14 @@ void handleCommand(String line) {
     cmdStatus();
   } else if (line == "MAP") {
     cmdMap();
+  } else if (line == "I2CSCAN") {
+    cmdI2CScan();
+  } else if (line == "MUXSCAN") {
+    cmdMuxScan();
+  } else if (line.startsWith("READCH")) {
+    cmdReadCh(line);
+  } else if (line.startsWith("READEEPROM")) {
+    cmdReadEeprom(line);
   } else if (line.startsWith("READ")) {
     cmdRead(line);
   } else if (line.startsWith("ZERO")) {

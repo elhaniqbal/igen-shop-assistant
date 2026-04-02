@@ -33,8 +33,17 @@ export type ToolItem = {
 export type AdminToolItemCreate = Omit<ToolItem, "tool_item_id"> & { tool_item_id?: string | null };
 export type InventoryRow = { tool_model_id: string; name: string; total: number; available: number; checked_out: number };
 export type LoanOut = {
-  loan_id: string; user_id: string; tool_item_id: string; tool_name?: string; tool_model_id?: string; tool_category?: string | null;
-  issued_at: string; due_at: string; confirmed_at?: string | null; returned_at?: string | null; status: string;
+  loan_id: string;
+  user_id: string;
+  tool_item_id: string;
+  tool_name?: string;
+  tool_model_id?: string;
+  tool_category?: string | null;
+  issued_at: string;
+  due_at: string;
+  confirmed_at?: string | null;
+  returned_at?: string | null;
+  status: string;
 };
 export type EventOut = { event_id: number; ts: string; event_type: string; actor_type: string; actor_id?: string | null; request_id?: string | null; tool_item_id?: string | null; payload_json: string };
 export type UsagePoint = { day: string; dispenses: number; returns: number };
@@ -64,7 +73,26 @@ export type CalibrationSetReq =
   | { action: "set_cake_center"; cake_id: number; value: number }
   | { action: "set_cake_center_x"; cake_id: number; value: number };
 export type HardwareCmdResp = { ok: boolean; request_id: string; cake_id: number; command: string; eeprom: any | null };
-export type ReadEepromResp = { ok: boolean; cake_id: number; eeprom: any | null; headers?: Record<string, string> };
+export type ReadEepromResp = {
+  ok: boolean;
+  cake_id: number;
+  eeprom: any | null;
+  stage?: string;
+  request_id?: string;
+  error_code?: string | null;
+  error_reason?: string | null;
+  headers?: Record<string, string>;
+};
+export type ReadAngleResp = {
+  ok: boolean;
+  cake_id: number;
+  reading: any | null;
+  stage?: string;
+  request_id?: string;
+  error_code?: string | null;
+  error_reason?: string | null;
+};
+export type CakeReadStartResp = { ok: boolean; request_id: string; cake_id: number };
 export type CakeHomeStartResp = { ok: boolean; request_id: string; cake_id: number };
 export type CakeHomeStatusResp = { request_id: string; cake_id: number; stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed"; error_code?: string | null; error_reason?: string | null };
 export type CronJobConfig = { id: string; name: string; enabled: boolean; schedule: string; description?: string; last_run_ts?: string | null; last_status?: "ok" | "error" | "unknown" | null };
@@ -84,6 +112,7 @@ export const apiAdmin = {
   createUser: (u: AdminUserCreate) => http<User>(EP.adminUsers, { method: "POST", json: u }),
   patchUser: (userId: string, patch: Partial<User>) => http<User>(EP.adminUser(userId), { method: "PATCH", json: patch }),
   deleteUser: (userId: string) => http<{ ok: boolean }>(EP.adminUser(userId), { method: "DELETE" }),
+
   listToolModels: (params?: { search?: string; category?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.search) q.set("search", params.search);
@@ -95,6 +124,7 @@ export const apiAdmin = {
   createToolModel: (m: AdminToolModelCreate) => http<ToolModel>(EP.adminToolModels, { method: "POST", json: m }),
   patchToolModel: (id: string, patch: ToolModelPatch) => http<ToolModel>(EP.adminToolModel(id), { method: "PATCH", json: patch }),
   deleteToolModel: (id: string) => http<{ ok: boolean }>(EP.adminToolModel(id), { method: "DELETE" }),
+
   listToolItems: (params?: { tool_model_id?: string; cake_id?: string; is_active?: boolean; search?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.tool_model_id) q.set("tool_model_id", params.tool_model_id);
@@ -108,8 +138,14 @@ export const apiAdmin = {
   createToolItem: (i: AdminToolItemCreate) => http<ToolItem>(EP.adminToolItems, { method: "POST", json: i }),
   patchToolItem: (id: string, patch: Partial<ToolItem>) => http<ToolItem>(EP.adminToolItem(id), { method: "PATCH", json: patch }),
   deleteToolItem: (id: string) => http<{ ok: boolean }>(EP.adminToolItem(id), { method: "DELETE" }),
-  dropUnconfirmedToolItem: (toolItemId: string) => http<{ ok: boolean; tool_item_id: string; loan_id: string; status: string; item_is_active: boolean }>(`${EP.adminToolItem(toolItemId)}/drop-unconfirmed`, { method: "POST" }),
+  dropUnconfirmedToolItem: (toolItemId: string) =>
+    http<{ ok: boolean; tool_item_id: string; loan_id: string; status: string; item_is_active: boolean }>(
+      `${EP.adminToolItem(toolItemId)}/drop-unconfirmed`,
+      { method: "POST" }
+    ),
+
   inventory: () => http<InventoryRow[]>(EP.adminInventory),
+
   listLoans: (params?: { active_only?: boolean; overdue_only?: boolean; user_id?: string; tool_item_id?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.active_only !== undefined) q.set("active_only", String(params.active_only));
@@ -122,7 +158,9 @@ export const apiAdmin = {
   },
   patchLoan: (loanId: string, patch: LoanPatch) => http<LoanOut>(EP.adminLoan(loanId), { method: "PATCH", json: patch }),
   extendLoan: (loanId: string, add_hours: number) => http<AdminLoanExtendResp>(EP.adminLoanExtend(loanId), { method: "POST", json: { add_hours } }),
-  sendOverdueEmail: (loanId: string) => http<{ ok: boolean; loan_id: string; message: string }>(EP.adminLoanSendOverdueEmail(loanId), { method: "POST" }),
+  sendOverdueEmail: (loanId: string) =>
+    http<{ ok: boolean; loan_id: string; message: string }>(EP.adminLoanSendOverdueEmail(loanId), { method: "POST" }),
+
   listEvents: (params?: { event_type?: string; actor_id?: string; request_id?: string; tool_item_id?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.event_type) q.set("event_type", params.event_type);
@@ -133,56 +171,99 @@ export const apiAdmin = {
     const qs = q.toString();
     return http<EventOut[]>(`${EP.adminEvents}${qs ? `?${qs}` : ""}`);
   },
-  assignUserCard: (userId: string, card_id: string) => http<{ ok: boolean; user_id: string; card_id: string }>(EP.adminAssignUserCard(userId), { method: "PUT", json: { card_id } }),
-  assignToolTag: (toolItemId: string, tool_tag_id: string) => http<{ ok: boolean; tool_item_id: string; tool_tag_id: string }>(EP.adminAssignToolTag(toolItemId), { method: "PUT", json: { tool_tag_id } }),
+
+  assignUserCard: (userId: string, card_id: string) =>
+    http<{ ok: boolean; user_id: string; card_id: string }>(EP.adminAssignUserCard(userId), { method: "PUT", json: { card_id } }),
+  assignToolTag: (toolItemId: string, tool_tag_id: string) =>
+    http<{ ok: boolean; tool_item_id: string; tool_tag_id: string }>(EP.adminAssignToolTag(toolItemId), { method: "PUT", json: { tool_tag_id } }),
+
   usage: (days: number) => http<UsagePoint[]>(`${EP.adminUsage}?days=${days}`),
+
   motorTestStart: (req: MotorTestReq) => http<MotorTestStartResp>(EP.adminMotorTestStart, { method: "POST", json: req }),
   motorTestStatus: (requestId: string) => http<MotorTestStatusResp>(EP.adminMotorTestStatus(requestId)),
+
   manualStatus: () => http<ManualControlStatus>(EP.adminMachineStatus),
-  manualHomeAll: (home_mode?: HomeMode) => http<ManualCommandResp>(EP.adminManualHomeAll, { method: "POST", json: home_mode ? { home_mode } : {} }),
+  manualHomeAll: (home_mode?: HomeMode) =>
+    http<ManualCommandResp>(EP.adminManualHomeAll, {
+      method: "POST",
+      json: home_mode ? { home_mode } : {},
+    }),
   manualGoToDoor: () => http<ManualCommandResp>(EP.adminManualGoToDoor, { method: "POST" }),
   manualStop: () => http<ManualCommandResp>(EP.adminManualStop, { method: "POST" }),
   manualJogAxis: (req: ManualJogAxisReq) => http<ManualCommandResp>(EP.adminManualJogAxis, { method: "POST", json: req }),
   manualMoveCake: (req: ManualMoveCakeReq) => http<ManualCommandResp>(EP.adminManualMoveCake, { method: "POST", json: req }),
+
   machineStatus: () => http<MachineStatus>(EP.adminMachineStatus),
   machineQueryStatus: () => http<ManualCommandResp>(EP.adminMachineQueryStatus, { method: "POST" }),
   machineRestartKlipper: () => http<ManualCommandResp>(EP.adminMachineRestartKlipper, { method: "POST" }),
   machineFirmwareRestart: () => http<ManualCommandResp>(EP.adminMachineFirmwareRestart, { method: "POST" }),
   machineEmergencyStop: () => http<ManualCommandResp>(EP.adminMachineEmergencyStop, { method: "POST" }),
+
   machineAlerts: async () => {
-    try { return await http<MachineAlert[]>(EP.adminMachineAlerts); } catch { return []; }
+    try {
+      return await http<MachineAlert[]>(EP.adminMachineAlerts);
+    } catch {
+      return [];
+    }
   },
   hardwareWaits: async () => {
-    try { return await http<{ waits?: PendingHardwareWait[] }>(EP.adminHardwareWaits); } catch { return { waits: [] }; }
+    try {
+      return await http<{ waits?: PendingHardwareWait[] }>(EP.adminHardwareWaits);
+    } catch {
+      return { waits: [] };
+    }
   },
-  hardwareConfirmRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(`/api/admin/hardware/requests/${encodeURIComponent(requestId)}/confirm`, { method: "POST" }),
-  hardwareCancelRequest: (requestId: string) => http<{ ok: boolean; request_id: string }>(`/api/admin/hardware/requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
+  hardwareConfirmRequest: (requestId: string) =>
+    http<{ ok: boolean; request_id: string }>(`/api/admin/hardware/requests/${encodeURIComponent(requestId)}/confirm`, { method: "POST" }),
+  hardwareCancelRequest: (requestId: string) =>
+    http<{ ok: boolean; request_id: string }>(`/api/admin/hardware/requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST" }),
+
   calibrationStatus: () => http<CalibrationStatus>(EP.adminCalibrationStatus),
   calibrationSet: (req: CalibrationSetReq) => http<ManualCommandResp>(EP.adminCalibrationSet, { method: "POST", json: req }),
-  hardwareCommand: (cakeId: number, command: string, args?: Record<string, any>) => http<HardwareCmdResp>(`/api/admin/hardware/cakes/${cakeId}/cmd`, { method: "POST", json: { command, args: args ?? {} } }),
-  readCakeEeprom: async (cakeId: number) => {
-    const res = await fetch(`/api/admin/cakes/${cakeId}/eeprom`, { method: "GET", credentials: "include" });
-    if (!res.ok) throw new Error((await res.text()) || "read eeprom failed");
-    const headers: Record<string, string> = {}; res.headers.forEach((v,k)=>headers[k]=v);
-    let body: any = null; try { body = await res.json(); } catch {}
-    return { ok: true, cake_id: cakeId, eeprom: body?.eeprom ?? null, headers } satisfies ReadEepromResp;
-  },
+
+  queueCakeReadEeprom: (cakeId: number) =>
+    http<CakeReadStartResp>(`/api/admin/cakes/${cakeId}/read-eeprom`, { method: "POST" }),
+  readCakeEeprom: (cakeId: number) =>
+    http<ReadEepromResp>(`/api/admin/cakes/${cakeId}/eeprom`),
+
+  queueCakeReadAngle: (cakeId: number) =>
+    http<CakeReadStartResp>(`/api/admin/cakes/${cakeId}/read-angle`, { method: "POST" }),
+  readCakeAngle: (cakeId: number) =>
+    http<ReadAngleResp>(`/api/admin/cakes/${cakeId}/angle`),
+
   cakeSetHome: (cakeId: number) => http<CakeHomeStartResp>(`/api/admin/cakes/${cakeId}/home`, { method: "POST" }),
   cakeSetHomeStatus: (requestId: string) => http<CakeHomeStatusResp>(`/api/admin/cakes/home/${requestId}/status`),
+
   cakesOverview: async () => {
     const data = await http<{ cakes?: CakeOverview[] } | CakeOverview[]>(EP.adminCakes);
     return Array.isArray(data) ? data : (data.cakes ?? []);
   },
+
   emailTemplates: () => http<{ templates: string[] }>(EP.adminEmailsTemplates),
-  sendEmail: (body: { to: string; subject: string; message: string }) => http<{ ok: boolean; message?: string }>(EP.adminEmailsSend, { method: "POST", json: body }),
-  sendTemplate: (body: { to: string; template_name: string; context?: Record<string, any> }) => http<{ ok: boolean; message?: string }>(EP.adminEmailsSendTemplate, { method: "POST", json: body }),
-  cronJobs: async () => { const data = await http<{ jobs?: CronJobConfig[] } | CronJobConfig[]>(EP.adminCronJobs); return Array.isArray(data) ? data : (data.jobs ?? []); },
+  sendEmail: (body: { to: string; subject: string; message: string }) =>
+    http<{ ok: boolean; message?: string }>(EP.adminEmailsSend, { method: "POST", json: body }),
+  sendTemplate: (body: { to: string; template_name: string; context?: Record<string, any> }) =>
+    http<{ ok: boolean; message?: string }>(EP.adminEmailsSendTemplate, { method: "POST", json: body }),
+
+  cronJobs: async () => {
+    const data = await http<{ jobs?: CronJobConfig[] } | CronJobConfig[]>(EP.adminCronJobs);
+    return Array.isArray(data) ? data : (data.jobs ?? []);
+  },
   cronRunHealthcheck: () => http<{ ok: boolean; message?: string }>(EP.adminCronRunHealthcheck, { method: "POST" }),
   cronRunEmailTest: () => http<{ ok: boolean; message?: string }>(EP.adminCronRunEmailTest, { method: "POST" }),
-  cronAlertRecipients: async () => { const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients); return Array.isArray(data) ? data : (data.recipients ?? []); },
+  cronAlertRecipients: async () => {
+    const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients);
+    return Array.isArray(data) ? data : (data.recipients ?? []);
+  },
 
   confirmLoan: (loanId: string) =>
-  http<{ ok: boolean }>(EP.adminLoanConfirm(loanId), {
-    method: "POST",
-  }),
+    http<{ ok: boolean }>(EP.adminLoanConfirm(loanId), {
+      method: "POST",
+    }),
+
+  cancelUnconfirmedLoan: (loanId: string) =>
+    http<{ ok: boolean; loan_id: string; status: string; returned_at: string }>(
+      `/api/admin/loans/${encodeURIComponent(loanId)}/cancel-unconfirmed`,
+      { method: "POST" }
+    ),
 };

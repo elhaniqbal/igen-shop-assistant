@@ -22,20 +22,6 @@ function fmtDT(s: string) {
   return Number.isFinite(d.getTime()) ? d.toLocaleString() : s;
 }
 
-const SESSION_CHECKED_OUT_KEY = "haven_session_checked_out_count";
-
-function readSessionCheckedOutCount() {
-  if (typeof window === "undefined") return 0;
-  const raw = window.sessionStorage.getItem(SESSION_CHECKED_OUT_KEY);
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
-}
-
-function writeSessionCheckedOutCount(value: number) {
-  if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(SESSION_CHECKED_OUT_KEY, String(Math.max(0, value)));
-}
-
 export function UserApp({
   userId,
   readerId,
@@ -61,10 +47,10 @@ export function UserApp({
   const [cartOpen, setCartOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [returnQueue, setReturnQueue] = useState<LoanRow[]>([]);
-  const [sessionCheckedOutCount, setSessionCheckedOutCount] = useState(0);
 
   const cartItems = useMemo(() => Object.values(cart).filter((x) => x.qty > 0), [cart]);
   const cartCount = useMemo(() => cartItems.reduce((a, x) => a + x.qty, 0), [cartItems]);
+  const checkedOutCount = loans.length;
   const clearCart = () => setCart({});
 
   const refreshBrowse = async () => {
@@ -98,7 +84,6 @@ export function UserApp({
   };
 
   useEffect(() => {
-    setSessionCheckedOutCount(readSessionCheckedOutCount());
     (async () => {
       try {
         setErr(null);
@@ -108,10 +93,6 @@ export function UserApp({
       }
     })();
   }, []);
-
-  useEffect(() => {
-    writeSessionCheckedOutCount(sessionCheckedOutCount);
-  }, [sessionCheckedOutCount]);
 
   const filteredModels = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -237,10 +218,10 @@ export function UserApp({
           <div className="flex items-center gap-3 rounded-2xl border border-white/80 bg-white/90 px-4 py-3 shadow-sm">
             <div className="text-right text-xs text-slate-500">
               <div>Checked Out</div>
-              <div className="text-lg font-bold text-slate-900">{sessionCheckedOutCount}</div>
+              <div className="text-lg font-bold text-slate-900">{checkedOutCount}</div>
             </div>
             <div className="grid h-11 w-11 place-items-center rounded-full bg-rose-600 font-bold text-white">
-              {sessionCheckedOutCount}
+              {checkedOutCount}
             </div>
           </div>
         </div>
@@ -299,7 +280,7 @@ export function UserApp({
         <div className="mt-6 flex gap-6 border-b border-slate-200">
           {([
             ["browse", "Browse Tools", null],
-            ["mytools", "My Tools", sessionCheckedOutCount > 0 ? sessionCheckedOutCount : null],
+            ["mytools", "My Tools", checkedOutCount > 0 ? checkedOutCount : null],
             ["return", "Return Tools", null],
           ] as const).map(([id, label, badge]) => (
             <button
@@ -444,8 +425,6 @@ export function UserApp({
         userId={userId}
         readerId={readerId}
         onDispenseCompleted={async () => {
-          const dispensedCount = cartItems.reduce((a, x) => a + x.qty, 0);
-          setSessionCheckedOutCount((n) => n + dispensedCount);
           await refreshLoans();
           await refreshBrowse();
           setTab("mytools");
@@ -468,7 +447,6 @@ export function UserApp({
           expected_tool_tag: loan.tool_tag_id,
         }))}
         onAllDone={async () => {
-          setSessionCheckedOutCount((n) => Math.max(0, n - returnQueue.length));
           await refreshLoans();
           await refreshBrowse();
           closeReturn();

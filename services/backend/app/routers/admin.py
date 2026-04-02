@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 from .deps import get_db, get_mqtt, require_admin
 from .. import schemas
 from .. import models
 from ..usecases import admin_crud as uc
-from ..usecases.user_flow import get_cake_overview, get_cake_current_slot, normalize_slot
+from ..usecases.user_flow import get_cake_overview, get_cake_current_slot, set_cake_current_slot, normalize_slot
 from ..mqtt import MqttBus
 import uuid
 from datetime import timedelta
@@ -75,6 +75,30 @@ def _latest_event_payload(db: Session, event_type: str) -> dict | None:
         return json.loads(row.payload_json or "{}")
     except Exception:
         return None
+
+
+def _resolve_cake_key(db: Session, cake_num: int) -> str:
+    candidates = [
+        f"cake_{cake_num}",
+        f"cake{cake_num}",
+    ]
+
+    for key in candidates:
+        if db.get(models.CakeState, key) is not None:
+            return key
+
+    row = (
+        db.execute(
+            select(models.ToolItem.cake_id)
+            .where(models.ToolItem.cake_id.in_(candidates))
+            .limit(1)
+        )
+        .first()
+    )
+    if row and row[0]:
+        return str(row[0])
+
+    return f"cake_{cake_num}"
 
 
 def _moonraker_json(method: str, path: str, payload: dict | None = None, timeout: float = 3.0) -> dict:
@@ -285,7 +309,6 @@ def delete_tool_item(tool_item_id: str, db: Session = Depends(get_db)):
     return uc.delete_tool_item(db, tool_item_id)
 
 
-# NEW: drop an UNCONFIRMED checked-out item from inventory (soft delete item + cancel unconfirmed loan)
 @router.post("/tool-items/{tool_item_id}/drop-unconfirmed")
 def drop_unconfirmed_tool_item(tool_item_id: str, db: Session = Depends(get_db)):
     return uc.drop_unconfirmed_tool_item(db, tool_item_id)
@@ -331,18 +354,97 @@ def extend_loan(loan_id: str, req: schemas.AdminExtendLoanReq, db: Session = Dep
     db.commit()
     return {"ok": True, "loan_id": loan_id, "due_at": loan.due_at.isoformat() + "Z"}
 
-@router.get("/cakes/{cake_id}/eeprom")
-def read_cake_eeprom(cake_id: int):
-    # later: return EEPROM in headers or body
-    return {"ok": True, "cake_id": cake_id, "eeprom": None}
 
-# NEW: confirm an UNCONFIRMED loan (admin override)
+@router.get("/cakes/{cake_id}/eeprom")
+def read_cake_eeprom(cake_id: int, db: Session = Depends(get_db)):
+    row = (
+        db.execute(
+            select(models.Event)
+            .where(models.Event.event_type == "mqtt:igen/evt/admin/calibration")
+            .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+        )
+        .scalars()
+        .all()
+    )
+
+    for ev in row:
+        try:
+            payload = json.loads(ev.payload_json or "{}")
+        except Exception:
+            continue
+
+        if payload.get("action") == "encoder_read_eeprom" and int(payload.get("cake_id", -1)) == cake_id:
+            return {
+                "ok": payload.get("stage") == "succeeded",
+                "cake_id": cake_id,
+                "stage": payload.get("stage"),
+                "request_id": payload.get("request_id"),
+                "error_code": payload.get("error_code"),
+                "error_reason": payload.get("error_reason"),
+                "eeprom": payload.get("eeprom"),
+            }
+
+    return {"ok": False, "cake_id": cake_id, "eeprom": None, "detail": "no_eeprom_read_yet"}
+
+
+@router.post("/cakes/{cake_id}/read-angle")
+def queue_cake_read_angle(cake_id: int, request: Request, db: Session = Depends(get_db)):
+    request_id = _new_request_id("cal")
+
+    payload = {
+        "request_id": request_id,
+        "action": "encoder_read",
+        "cake_id": cake_id,
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/calibration",
+        payload=payload,
+        event_type="admin:cake_read_angle_requested",
+        db=db,
+    )
+
+    return {"ok": True, "request_id": request_id, "cake_id": cake_id}
+
+
+@router.get("/cakes/{cake_id}/angle")
+def read_cake_angle(cake_id: int, db: Session = Depends(get_db)):
+    rows = (
+        db.execute(
+            select(models.Event)
+            .where(models.Event.event_type == "mqtt:igen/evt/admin/calibration")
+            .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+        )
+        .scalars()
+        .all()
+    )
+
+    for ev in rows:
+        try:
+            payload = json.loads(ev.payload_json or "{}")
+        except Exception:
+            continue
+
+        if payload.get("action") in {"encoder_read", "encoder_read_angle"} and int(payload.get("cake_id", -1)) == cake_id:
+            return {
+                "ok": payload.get("stage") == "succeeded",
+                "cake_id": cake_id,
+                "stage": payload.get("stage"),
+                "request_id": payload.get("request_id"),
+                "error_code": payload.get("error_code"),
+                "error_reason": payload.get("error_reason"),
+                "reading": payload.get("reading"),
+            }
+
+    return {"ok": False, "cake_id": cake_id, "reading": None, "detail": "no_angle_read_yet"}
+
+
 @router.post("/loans/{loan_id}/confirm")
 def admin_confirm_loan(loan_id: str, db: Session = Depends(get_db)):
     return uc.admin_confirm_unconfirmed_loan(db, loan_id)
 
 
-# NEW: cancel an UNCONFIRMED loan (free inventory)
 @router.post("/loans/{loan_id}/cancel-unconfirmed")
 def admin_cancel_unconfirmed_loan(loan_id: str, db: Session = Depends(get_db)):
     return uc.admin_cancel_unconfirmed_loan(db, loan_id)
@@ -376,10 +478,17 @@ def manual_status(db: Session = Depends(get_db)):
 
 
 @router.post("/manual/home-all", response_model=schemas.ManualCommandResp)
-def manual_home_all(request: Request, db: Session = Depends(get_db)):
+def manual_home_all(
+    request: Request,
+    body: dict | None = Body(default=None),
+    db: Session = Depends(get_db),
+):
+    home_mode = str((body or {}).get("home_mode") or "python_assisted")
+
     payload = {
         "request_id": _new_request_id("adm"),
         "action": "home_machine",
+        "home_mode": home_mode,
     }
     _publish_admin_command(
         request,
@@ -390,9 +499,10 @@ def manual_home_all(request: Request, db: Session = Depends(get_db)):
     )
     return {
         "ok": True,
-        "message": "Queued home machine command",
+        "message": f"Queued home machine command ({home_mode})",
         "request_id": payload["request_id"],
         "command": payload["action"],
+        "data": {"home_mode": home_mode},
     }
 
 
@@ -465,9 +575,11 @@ def manual_jog_axis(body: schemas.ManualJogAxisReq, request: Request, db: Sessio
 
 @router.post("/manual/move-cake", response_model=schemas.ManualCommandResp)
 def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Session = Depends(get_db)):
-    current_slot = get_cake_current_slot(db, f"cake{body.cake_id}")
+    cake_key = _resolve_cake_key(db, body.cake_id)
+    current_slot = get_cake_current_slot(db, cake_key)
     signed_step = body.step if body.direction == "cw" else -body.step
     target_slot = normalize_slot(current_slot + signed_step)
+
     payload = {
         "request_id": _new_request_id("adm"),
         "action": "move_cake",
@@ -475,6 +587,7 @@ def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Sess
         "current_slot": current_slot,
         "target_slot": target_slot,
     }
+
     _publish_admin_command(
         request,
         topic="igen/cmd/admin/manual",
@@ -482,12 +595,21 @@ def manual_move_cake(body: schemas.ManualMoveCakeReq, request: Request, db: Sess
         event_type="admin:manual_move_cake_requested",
         db=db,
     )
+
+    set_cake_current_slot(db, cake_key, target_slot)
+    db.commit()
+
     return {
         "ok": True,
         "message": f"Queued move cake {body.cake_id} from slot {current_slot} to slot {target_slot}",
         "request_id": payload["request_id"],
         "command": payload["action"],
-        "data": {"cake_id": body.cake_id, "current_slot": current_slot, "target_slot": target_slot},
+        "data": {
+            "cake_id": body.cake_id,
+            "cake_key": cake_key,
+            "current_slot": current_slot,
+            "target_slot": target_slot,
+        },
     }
 
 
@@ -669,53 +791,9 @@ def calibration_set(body: schemas.AdminCalibrationSetReq, request: Request, db: 
     }
 
 # ---------------- HARDWARE STATUS / CONSOLE ----------------
-# NOTE: you said you will add topics + bridge support later. This is the API surface the frontend will call now.
-
-@router.post("/hardware/cakes/{cake_id}/cmd")
-def hardware_send_cmd(cake_id: int, body: dict, request: Request, db: Session = Depends(get_db)):
-    """
-    body = { "command": "zero" | "read_eeprom" | "burn_eeprom" | "status" | ... , "args": {...optional...} }
-    """
-    cmd = (body.get("command") or "").strip()
-    args = body.get("args") or {}
-    if not cmd:
-        raise HTTPException(400, "missing_command")
-
-    mqtt = request.app.state.mqtt
-    if not mqtt:
-        raise HTTPException(status_code=503, detail="MQTT not ready")
-
-    request_id = uuid.uuid4().hex
-
-    # log command as an event (so UI can show command history)
-    uc.log_event(
-        db,
-        "admin_hw_cmd",
-        actor_type="admin",
-        actor_id=None,
-        request_id=request_id,
-        tool_item_id=None,
-        payload={"cake_id": cake_id, "command": cmd, "args": args},
-    )
-    db.commit()
-
-    # publish command (you will implement these topics on the ESP32 side / bridge)
-    mqtt.publish(
-        "igen/cmd/hardware/cake",
-        {
-            "request_id": request_id,
-            "cake_id": cake_id,
-            "command": cmd,
-            "args": args,
-        },
-        qos=1,
-    )
-
-    # For now we return placeholder data; later you can return actual status/EEPROM from MQTT responses
-    return {"ok": True, "request_id": request_id, "cake_id": cake_id, "command": cmd, "eeprom": None}
 
 @router.post("/cakes/{cake_id}/home")
-def cake_set_home(cake_id: int, request: Request):
+def cake_set_home(cake_id: int, request: Request, db: Session = Depends(get_db)):
     request_id = uuid.uuid4().hex
 
     set_cake_cmd_status(request_id, {
@@ -726,28 +804,102 @@ def cake_set_home(cake_id: int, request: Request):
         "error_reason": None,
     })
 
-    mqtt = request.app.state.mqtt
-    if not mqtt:
-        set_cake_cmd_status(request_id, {
-            "stage": "failed",
-            "error_code": "MQTT_NOT_READY",
-            "error_reason": "mqtt bus not ready",
-        })
-        raise HTTPException(status_code=503, detail="MQTT not ready")
-
-    mqtt.publish("igen/cmd/cake/home", {
+    payload = {
         "request_id": request_id,
+        "action": "set_cake_zero",
         "cake_id": cake_id,
-    })
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:cake_set_home_requested",
+        db=db,
+    )
+
+    print("CAKE HOME CMD SENT")
+
+    return {"ok": True, "request_id": request_id, "cake_id": cake_id}
+
+
+@router.post("/cakes/{cake_id}/read-eeprom")
+def queue_cake_read_eeprom(cake_id: int, request: Request, db: Session = Depends(get_db)):
+    request_id = _new_request_id("cal")
+
+    payload = {
+        "request_id": request_id,
+        "action": "encoder_read_eeprom",
+        "cake_id": cake_id,
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/calibration",
+        payload=payload,
+        event_type="admin:cake_read_eeprom_requested",
+        db=db,
+    )
 
     return {"ok": True, "request_id": request_id, "cake_id": cake_id}
 
 
 @router.get("/cakes/home/{request_id}/status")
-def cake_set_home_status(request_id: str):
+def cake_set_home_status(request_id: str, db: Session = Depends(get_db)):
+    rows = (
+        db.execute(
+            select(models.Event)
+            .where(models.Event.event_type == "mqtt:igen/evt/admin/manual")
+            .order_by(models.Event.ts.desc(), models.Event.event_id.desc())
+            .limit(100)
+        )
+        .scalars()
+        .all()
+    )
+
+    matched_payload = None
+    for row in rows:
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except Exception:
+            continue
+        if payload.get("request_id") == request_id:
+            matched_payload = payload
+            break
+
+    if matched_payload:
+        stage = matched_payload.get("stage")
+        cake_id = matched_payload.get("cake_id")
+
+        data = matched_payload.get("data") or {}
+        if cake_id is None and isinstance(data, dict):
+            cake_id = data.get("cake_id")
+
+        set_cake_cmd_status(request_id, {
+            "request_id": request_id,
+            "cake_id": cake_id,
+            "stage": stage or "unknown",
+            "error_code": matched_payload.get("error_code"),
+            "error_reason": matched_payload.get("error_reason"),
+        })
+
     st = get_cake_cmd_status(request_id)
     if not st:
         raise HTTPException(status_code=404, detail="unknown request_id")
+
+    if st.get("stage") == "succeeded":
+        cake_id = st.get("cake_id")
+        if cake_id is not None:
+            cake_key = _resolve_cake_key(db, int(cake_id))
+            current_slot = get_cake_current_slot(db, cake_key)
+            if current_slot != 0:
+                try:
+                    from ..usecases.user_flow import remap_cake_home
+                    remap_cake_home(db, cake_key, current_slot)
+                    db.commit()
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
     return st
 
 

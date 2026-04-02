@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 import requests
 
-MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://localhost:7125").rstrip("/")
+MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
 TIMEOUT_S = float(os.getenv("MOONRAKER_TIMEOUT_S", "10"))
 SETTLE_DELAY_S = float(os.getenv("VERTICAL_HOME_SETTLE_DELAY_S", "0.05"))
 

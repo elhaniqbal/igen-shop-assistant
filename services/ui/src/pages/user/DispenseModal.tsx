@@ -240,7 +240,7 @@ export function DispenseModal({
         await sleep(250);
       }
 
-      setErr("No tool scan received. You can tap again or use manual confirm.");
+      setErr("No tool scan received. You can tap again or manually type the tool tag / tool ID.");
     } catch (e: any) {
       setErr(msg(e));
     } finally {
@@ -251,7 +251,7 @@ export function DispenseModal({
   const submitScanConfirm = async () => {
     const tag = scanInput.trim();
     if (!tag) {
-      setErr("Scan the dispensed tool first, or use manual confirm.");
+      setErr("Scan the dispensed tool first, or manually type the tool tag / tool ID.");
       return;
     }
 
@@ -271,14 +271,8 @@ export function DispenseModal({
       <div className="relative w-full max-w-3xl overflow-hidden rounded-[32px] bg-white shadow-2xl">
         {phase === "running" ? (
           <HardwareOverlay
-            title={phase === "confirm_pickup" ? "Verify your tool" : "Dispensing tools"}
-            subtitle={
-              phase === "confirm_pickup"
-                ? "Scan the dispensed tool to confirm it, or use the manual confirm button."
-                : current
-                ? `Preparing ${current.label}`
-                : "Preparing your request"
-            }
+            title="Dispensing tools"
+            subtitle={current ? `Preparing ${current.label}` : "Preparing your request"}
           />
         ) : null}
 
@@ -348,7 +342,7 @@ export function DispenseModal({
             <div className="mt-6 rounded-3xl border bg-slate-50 p-5">
               <div className="text-lg font-semibold text-slate-900">Scan the dispensed tool</div>
               <div className="mt-2 text-sm text-slate-600">
-                Tap the tool tag to confirm you received the item that was just dispensed.
+                Scan the dispensed tool tag, or manually type the tool tag / tool ID printed on the item.
               </div>
 
               <div className="mt-4">
@@ -356,7 +350,7 @@ export function DispenseModal({
                   className="w-full rounded-2xl border px-4 py-3 font-mono"
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
-                  placeholder="Tap tool tag (or type)"
+                  placeholder="Scan or type the tool tag / tool ID"
                 />
               </div>
 
@@ -402,7 +396,7 @@ export function DispenseModal({
             </div>
           ) : null}
 
-          {phase === "running"  ? (
+          {phase === "running" ? (
             <div className="mt-6 rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
               <div className="flex items-center justify-between">
                 <div className="font-semibold">Current item: {current?.label ?? "—"}</div>

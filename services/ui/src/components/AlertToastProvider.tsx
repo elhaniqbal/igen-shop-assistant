@@ -73,6 +73,10 @@ export function AlertToastProvider({ children }: { children: React.ReactNode }) 
   const [toasts, setToasts] = useState<AlertToast[]>([]);
   const seenIds = useRef<Set<string>>(new Set());
 
+  // Any alert created before this provider mounted is considered historical
+  // and should not produce a toast on login / initial page load.
+  const sessionStartMsRef = useRef<number>(Date.now());
+
   const dismissToast = useCallback((id: string) => {
     setToasts((curr) => curr.filter((t) => t.id !== id));
   }, []);
@@ -87,6 +91,19 @@ export function AlertToastProvider({ children }: { children: React.ReactNode }) 
 
   const pushToast = useCallback((toast: AlertToast) => {
     if (seenIds.current.has(toast.id)) return;
+
+    const createdAtMs =
+      toast.createdAt && Number.isFinite(new Date(toast.createdAt).getTime())
+        ? new Date(toast.createdAt).getTime()
+        : null;
+
+    // Suppress stale/historical alerts from becoming pop-up notifications.
+    // Still mark them as seen so repeated polling won't try again.
+    if (createdAtMs !== null && createdAtMs < sessionStartMsRef.current) {
+      seenIds.current.add(toast.id);
+      return;
+    }
+
     seenIds.current.add(toast.id);
     setToasts((curr) => [toast, ...curr].slice(0, 6));
 

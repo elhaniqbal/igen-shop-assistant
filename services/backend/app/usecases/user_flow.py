@@ -92,9 +92,6 @@ def _ensure_slot_state_seeded(db: Session, tool: models.ToolItem):
 
     pending = _pending_cake_slot_state(db, tool.cake_id, slot_index)
     if pending is not None:
-        # If pending row exists but has no tool assigned, fill it.
-        if pending.tool_item_id is None:
-            pending.tool_item_id = tool.tool_item_id
         return pending
 
     state = db.get(models.CakeSlotState, {"cake_id": tool.cake_id, "slot_index": slot_index})
@@ -107,9 +104,9 @@ def _ensure_slot_state_seeded(db: Session, tool: models.ToolItem):
         db.add(state)
         return state
 
-    # Keep an existing empty slot seeded with the known legacy tool if needed.
-    if state.tool_item_id is None:
-        state.tool_item_id = tool.tool_item_id
+    # IMPORTANT:
+    # Do NOT repopulate an existing empty live slot from ToolItem.slot_id.
+    # CakeSlotState is now the live source of truth.
     return state
 
 
@@ -219,12 +216,42 @@ def _allocate_tool_item_for_model(
         return fallback[0][1]
     return None
 
+def remap_cake_home(db: Session, cake_id: str, old_home_slot: int):
+    old_home_slot = normalize_slot(old_home_slot)
 
+    rows = db.execute(
+        select(models.CakeSlotState).where(models.CakeSlotState.cake_id == cake_id)
+    ).scalars().all()
+
+    old_map = {int(r.slot_index): r.tool_item_id for r in rows}
+    new_map = {}
+
+    # compute rotated mapping
+    for old_slot, tool_item_id in old_map.items():
+        new_slot = normalize_slot(old_slot - old_home_slot)
+        new_map[new_slot] = tool_item_id
+
+    # ❗ enforce slot 0 must be empty
+    if new_map.get(0) is not None:
+        raise ValueError(f"cannot_set_home_slot_contains_tool:{cake_id}:{old_home_slot}")
+
+    # rewrite slot state
+    for slot in range(SLOTS_PER_CAKE):
+        row = db.get(models.CakeSlotState, {"cake_id": cake_id, "slot_index": slot})
+        if row is None:
+            row = models.CakeSlotState(cake_id=cake_id, slot_index=slot, tool_item_id=None)
+            db.add(row)
+        row.tool_item_id = new_map.get(slot)
+
+    # set new logical home
+    set_cake_current_slot(db, cake_id, 0)
+    
 def _allocate_return_slot(db: Session, cake_id: str, *, reserved_slots: set[int] | None = None) -> int:
     reserved_slots = reserved_slots or set()
 
-    occupied = {0}
-    occupied.update(int(slot) for slot in reserved_slots if int(slot) != 0)
+    current = get_cake_current_slot(db, cake_id)
+
+    occupied = set(int(slot) for slot in reserved_slots)
     occupied.update(
         int(row.slot_index)
         for row in db.execute(
@@ -233,19 +260,21 @@ def _allocate_return_slot(db: Session, cake_id: str, *, reserved_slots: set[int]
                 models.CakeSlotState.tool_item_id.is_not(None),
             )
         ).scalars().all()
-        if int(row.slot_index) != 0
     )
 
-    current = normalize_storage_slot(get_cake_current_slot(db, cake_id))
-    if current not in occupied:
+    # Normal bounded case: current slot is a storage slot.
+    if current in {1, 2, 3, 4, 5}:
+        if current in occupied:
+            raise ValueError(f"return_slot_not_empty:{cake_id}:{current}")
         return current
 
-    for idx in storage_slots():
-        if idx not in occupied:
-            return idx
+    # Special home case: allow return from home only if slot 5 is free.
+    if current == 0:
+        if 5 in occupied:
+            raise ValueError(f"return_from_home_slot5_occupied:{cake_id}")
+        return 5
 
-    raise ValueError(f"no_free_slot:{cake_id}")
-
+    raise ValueError(f"invalid_current_slot:{cake_id}:{current}")
 
 def create_dispense_batch(db: Session, user_id: str, items: list[dict], loan_period_hours: int):
     user = must_user_active(db, user_id)

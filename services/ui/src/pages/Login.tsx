@@ -53,7 +53,7 @@ export default function LoginPage({ onLogin }: { onLogin: (s: Session) => void }
               </div>
             </div>
             <div>
-              <h1 className="text-4xl font-black tracking-tight text-slate-950 sm:text-6xl">Tap in. Borrow smart. Return cleanly.</h1>
+              <h1 className="text-4xl font-black tracking-tight text-slate-950 sm:text-6xl">Tap.Borrow.Return</h1>
               <p className="mt-4 max-w-xl text-lg leading-8 text-slate-600">
                 HAVEN connects students, inventory, and motion control into one guided shop experience for UBC Integrated Engineering.
               </p>
