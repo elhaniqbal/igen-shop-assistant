@@ -9,7 +9,8 @@ dependencies = [
   "psycopg2-binary",
   "sqlalchemy>=2.0",
   "pyserial>=3.5",
-  "mfrc522"
+  "mfrc522",
+  "sendgrid"
 ]
 
 [tool.uvicorn]
