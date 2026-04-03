@@ -8,7 +8,7 @@ from ..usecases import admin_crud as uc
 from ..usecases.user_flow import get_cake_overview, get_cake_current_slot, set_cake_current_slot, normalize_slot
 from ..mqtt import MqttBus
 import uuid
-from datetime import timedelta
+from datetime import timedelta, datetime
 import json
 import os
 from urllib import error as urlerror, request as urlrequest
@@ -909,19 +909,75 @@ def send_overdue_email_alert(loan_id: str, db: Session = Depends(get_db)):
     if not loan:
         raise HTTPException(404, "loan not found")
 
+    user = db.get(models.User, loan.user_id)
+    if not user:
+        raise HTTPException(404, "user not found")
+
+    tool_item = db.get(models.ToolItem, loan.tool_item_id)
+    if not tool_item:
+        raise HTTPException(404, "tool item not found")
+
+    tool_model = db.get(models.ToolModel, tool_item.tool_model_id) if tool_item.tool_model_id else None
+    tool_name = getattr(tool_model, "name", None) or tool_item.tool_model_id or loan.tool_item_id
+
+    # hardcoded recipient for now; replace later
+    to_email = "brandon.alexander.jong@gmail.com"
+
+    overdue_hours = 0.0
+    if loan.due_at:
+        overdue_hours = max(0.0, round((datetime.now() - loan.due_at).total_seconds() / 3600.0, 1))
+
+    user_name = "there"
+    first_name = getattr(user, "first_name", None) or ""
+    last_name = getattr(user, "last_name", None) or ""
+    full_name = f"{first_name} {last_name}".strip()
+    if full_name:
+        user_name = full_name
+
+    try:
+        res = send_template(
+            to=to_email,
+            template_name="overdue_loan_notice",
+            context={
+                "user_name": user_name,
+                "user_id": user.user_id,
+                "tool_name": tool_name,
+                "tool_item_id": loan.tool_item_id,
+                "loan_id": loan.loan_id,
+                "due_at": loan.due_at.isoformat() if loan.due_at else "",
+                "overdue_hours": overdue_hours,
+                "support_email": os.getenv("SENDGRID_FROM_EMAIL", "noreply@example.com"),
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed_to_send_overdue_email:{e}")
+
     uc.log_event(
         db,
-        "admin:overdue_email_alert_requested",
+        "admin:overdue_email_alert_sent",
         actor_type="admin",
         actor_id=None,
         request_id=None,
         tool_item_id=getattr(loan, "tool_item_id", None),
-        payload={"loan_id": loan_id, "user_id": getattr(loan, "user_id", None)},
+        payload={
+            "loan_id": loan_id,
+            "user_id": getattr(loan, "user_id", None),
+            "to_email": to_email,
+            "tool_name": tool_name,
+            "sendgrid_result": {
+                "ok": res.get("ok"),
+                "status_code": res.get("status_code"),
+                "message": res.get("message"),
+            },
+        },
     )
     db.commit()
 
-    return {"ok": True, "loan_id": loan_id, "message": "Overdue alert request logged"}
-
+    return {
+        "ok": True,
+        "loan_id": loan_id,
+        "message": f"Overdue email sent to {to_email} for {tool_name}",
+    }
 # ---------------- EVENTS (read-only) ----------------
 @router.get("/events", response_model=list[schemas.EventOut])
 def list_events(
