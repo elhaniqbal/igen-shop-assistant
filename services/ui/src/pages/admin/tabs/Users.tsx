@@ -190,7 +190,7 @@ export default function Users() {
         <AssignCardModal
           open={true}
           user={modal.user}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           onClose={() => setModal(null)}
           onDone={load}
         />

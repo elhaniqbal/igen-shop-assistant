@@ -442,7 +442,7 @@ export default function Inventory() {
         <ToolItemModal
           title="Create Tool Item"
           models={models}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           initial={{
             tool_model_id: models[0]?.tool_model_id ?? "",
             cake_id: "cake_1",
@@ -473,7 +473,7 @@ export default function Inventory() {
         <ToolItemModal
           title="Edit Tool Item"
           models={models}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           initial={{
             tool_model_id: modal.it.tool_model_id,
             cake_id: modal.it.cake_id,
@@ -501,7 +501,7 @@ export default function Inventory() {
       ) : null}
 
       {modal?.kind === "tag" ? (
-        <AssignToolTagModal toolItem={modal.it} readerId="kiosk_1_reader_1" onClose={() => setModal(null)} onDone={load} />
+        <AssignToolTagModal toolItem={modal.it} readerId="haven_1_reader_1" onClose={() => setModal(null)} onDone={load} />
       ) : null}
     </div>
   );

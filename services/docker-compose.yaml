@@ -32,8 +32,11 @@ services:
       - MQTT_BROKER=mqtt # if inside docker mqtt, localhost otherwise
       - MQTT_PORT=1883
       - PYTHONUNBUFFERED=1
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
     volumes:
-      - ./data:/app/data       # ✅ Persistent SQLite storage
+      - ./data:/app/data       # Persistent SQLite storage
     healthcheck:
       disable: true # remove for PROD
     depends_on:
@@ -63,7 +66,18 @@ services:
     networks:
       - internal
       - public
-
+  # adminer:
+  #   image: arm64v8/adminer
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8083:8080"
+  #   volumes:
+  #     - ./data:/data
+  #   environment:
+  #     - ADMINER_DEFAULT_SERVER=sqlite
+  #   networks:
+  #     - internal
+  #     - public
   # ---- Mosquitto MQTT Broker ----
   mqtt:
     image: eclipse-mosquitto:2
@@ -129,7 +143,7 @@ services:
   #   environment:
   #     - MQTT_HOST=mqtt
   #     - MQTT_PORT=1883
-  #     - RFID_READER_ID=kiosk_1_reader_1
+  #     - RFID_READER_ID=haven_1_reader_1
   #     - RFID_DEFAULT_MODE=card
   #     - RFID_UID_ONLY=1
   #     - RFID_POLL_DELAY_S=0.05
