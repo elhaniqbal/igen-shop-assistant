@@ -98,6 +98,8 @@ export type CakeHomeStatusResp = { request_id: string; cake_id: number; stage: "
 export type CronJobConfig = { id: string; name: string; enabled: boolean; schedule: string; description?: string; last_run_ts?: string | null; last_status?: "ok" | "error" | "unknown" | null };
 export type AlertRecipient = { id?: string; email: string; enabled: boolean; severity_threshold?: "warning" | "error" | "critical" };
 export type CakeOverview = { cake_id: string; current_slot: number; slots: { slot_index: number; tool_item_id: string | null }[] };
+export type KlipperFileName = "vars.cfg" | "steppers.cfg";
+export type KlipperFileResp = { ok: boolean; name: KlipperFileName; path: string; content: string; message?: string };
 
 export const apiAdmin = {
   listUsers: (params?: { search?: string; role?: string; status?: string; limit?: number }) => {
@@ -255,6 +257,22 @@ export const apiAdmin = {
     const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients);
     return Array.isArray(data) ? data : (data.recipients ?? []);
   },
+
+
+  getKlipperFile: (name: KlipperFileName) =>
+    http<KlipperFileResp>(`/api/admin/klipper/file?name=${encodeURIComponent(name)}`),
+
+  saveKlipperFile: (name: KlipperFileName, content: string) =>
+    http<KlipperFileResp>(`/api/admin/klipper/file`, {
+      method: "POST",
+      json: { name, content },
+    }),
+
+  restartKlipper: (mode: "restart_klipper" | "firmware_restart") =>
+    http<ManualCommandResp>(`/api/admin/klipper/restart`, {
+      method: "POST",
+      json: { mode },
+    }),
 
   confirmLoan: (loanId: string) =>
     http<{ ok: boolean }>(EP.adminLoanConfirm(loanId), {

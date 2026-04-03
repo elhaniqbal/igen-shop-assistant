@@ -112,7 +112,7 @@ variable_cake4_return_offset: 9000
 variable_cake5_return_offset: 9000
 variable_cake6_return_offset: 9000
 
-variable_dwell_ms: 2000
+variable_dwell_ms: 1500
 
 # reserved for future encoder validation
 variable_last_encoder_angle: 0

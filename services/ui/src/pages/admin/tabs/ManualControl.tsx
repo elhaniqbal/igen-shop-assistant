@@ -91,6 +91,9 @@ export default function ManualControl() {
   const [alerts, setAlerts] = useState<MachineAlert[]>([]);
   const [waits, setWaits] = useState<PendingHardwareWait[]>([]);
   const [lastMessage, setLastMessage] = useState("Ready");
+  const [editorFile, setEditorFile] = useState<"vars.cfg" | "steppers.cfg">("vars.cfg");
+  const [editorContent, setEditorContent] = useState("");
+  const [editorLoading, setEditorLoading] = useState(false);
 
   async function refresh() {
     const [st, al, wa] = await Promise.all([
@@ -105,6 +108,7 @@ export default function ManualControl() {
 
   useEffect(() => {
     refresh().catch(() => undefined);
+    loadEditorFile("vars.cfg").catch(() => undefined);
     const id = window.setInterval(() => refresh().catch(() => undefined), 5000);
     return () => window.clearInterval(id);
   }, []);
@@ -141,6 +145,48 @@ export default function ManualControl() {
       setLastMessage(e?.message || "Klipper ping failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadEditorFile(name: "vars.cfg" | "steppers.cfg") {
+    try {
+      setEditorLoading(true);
+      const res = await apiAdmin.getKlipperFile(name);
+      setEditorFile(name);
+      setEditorContent(res?.content ?? "");
+      setLastMessage(`Loaded ${name}`);
+    } catch (e: any) {
+      setLastMessage(e?.message || `Failed to load ${name}`);
+    } finally {
+      setEditorLoading(false);
+    }
+  }
+
+  async function saveEditorFile() {
+    try {
+      setEditorLoading(true);
+      const res = await apiAdmin.saveKlipperFile(editorFile, editorContent);
+      setLastMessage(res?.message || `Saved ${editorFile}`);
+    } catch (e: any) {
+      setLastMessage(e?.message || `Failed to save ${editorFile}`);
+    } finally {
+      setEditorLoading(false);
+    }
+  }
+
+  async function saveAndRestart(mode: "restart_klipper" | "firmware_restart") {
+    try {
+      setEditorLoading(true);
+      const saveRes = await apiAdmin.saveKlipperFile(editorFile, editorContent);
+      const restartRes = await apiAdmin.restartKlipper(mode);
+      setLastMessage(
+        `${saveRes?.message || `Saved ${editorFile}`} · ${restartRes?.message || "Restart queued"}`
+      );
+      await refresh();
+    } catch (e: any) {
+      setLastMessage(e?.message || "Save + restart failed");
+    } finally {
+      setEditorLoading(false);
     }
   }
 
@@ -437,14 +483,69 @@ export default function ManualControl() {
             </div>
           </Card>
 
-          <Card title="Config editing" subtitle="Frontend alone cannot safely edit Klipper config files.">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-              Easiest clean implementation:
-              <div className="mt-2 space-y-1">
-                <div>• add admin-only backend endpoints to read/write `vars.cfg` and `steppers.cfg`</div>
-                <div>• expose raw text in a textarea editor</div>
-                <div>• save, then optionally trigger `RESTART_KLIPPER` or `FIRMWARE_RESTART`</div>
-                <div>• keep a backup copy before writes</div>
+          <Card title="Klipper files" subtitle="Raw editor for host-mounted vars.cfg and steppers.cfg.">
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => loadEditorFile("vars.cfg")}
+                  className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
+                    editorFile === "vars.cfg"
+                      ? "bg-rose-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  vars.cfg
+                </button>
+                <button
+                  onClick={() => loadEditorFile("steppers.cfg")}
+                  className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
+                    editorFile === "steppers.cfg"
+                      ? "bg-rose-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  steppers.cfg
+                </button>
+                <ActionButton
+                  label="Reload"
+                  disabled={editorLoading}
+                  onClick={() => loadEditorFile(editorFile)}
+                />
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                Editing <span className="font-mono font-semibold text-slate-900">{editorFile}</span>
+              </div>
+
+              <textarea
+                value={editorContent}
+                onChange={(e) => setEditorContent(e.target.value)}
+                spellCheck={false}
+                className="min-h-[360px] w-full rounded-[24px] border border-slate-200 bg-slate-950 p-4 font-mono text-sm text-slate-100"
+              />
+
+              <div className="flex flex-wrap gap-2">
+                <ActionButton
+                  label="Save"
+                  variant="primary"
+                  disabled={editorLoading}
+                  onClick={saveEditorFile}
+                />
+                <ActionButton
+                  label="Save + Restart Klipper"
+                  disabled={editorLoading}
+                  onClick={() => saveAndRestart("restart_klipper")}
+                />
+                <ActionButton
+                  label="Save + Firmware Restart"
+                  variant="danger"
+                  disabled={editorLoading}
+                  onClick={() => saveAndRestart("firmware_restart")}
+                />
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                Saves are atomic and the previous file is backed up as <span className="font-mono">.bak</span>.
               </div>
             </div>
           </Card>

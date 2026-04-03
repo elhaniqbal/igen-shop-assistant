@@ -35,8 +35,12 @@ services:
       - SENDGRID_API_KEY=${SENDGRID_API_KEY}
       - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
       - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+      - KLIPPER_CONFIG_DIR=/klipper-config
+      - KLIPPER_VARS_FILE=/klipper-config/vars.cfg
+      - KLIPPER_STEPPERS_FILE=/klipper-config/steppers.cfg
     volumes:
       - ./data:/app/data       # Persistent SQLite storage
+      - ./backend/app/btt-config/stepper-setup:/klipper-config
     healthcheck:
       disable: true # remove for PROD
     depends_on:

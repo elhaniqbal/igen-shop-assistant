@@ -11,6 +11,8 @@ import uuid
 from datetime import timedelta, datetime
 import json
 import os
+import shutil
+from pathlib import Path
 from urllib import error as urlerror, request as urlrequest
 
 from ..motor_test_store import set_motor_test_status, get_motor_test_status
@@ -21,6 +23,15 @@ from ..services.email_service import send_email, send_template, list_templates
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
+
+KLIPPER_CONFIG_DIR = Path(os.getenv("KLIPPER_CONFIG_DIR", "/klipper-config"))
+KLIPPER_VARS_FILE = Path(os.getenv("KLIPPER_VARS_FILE", str(KLIPPER_CONFIG_DIR / "vars.cfg")))
+KLIPPER_STEPPERS_FILE = Path(os.getenv("KLIPPER_STEPPERS_FILE", str(KLIPPER_CONFIG_DIR / "steppers.cfg")))
+
+ALLOWED_KLIPPER_FILES = {
+    "vars.cfg": KLIPPER_VARS_FILE,
+    "steppers.cfg": KLIPPER_STEPPERS_FILE,
+}
 
 
 def _mqtt_or_503(request: Request):
@@ -164,6 +175,37 @@ def _coerce_manual_status(payload: dict | None) -> dict:
         "error": payload.get("error"),
         "source": payload.get("source", "mqtt_cache"),
     }
+
+
+def _resolve_klipper_file(name: str) -> Path:
+    path = ALLOWED_KLIPPER_FILES.get(name)
+    if not path:
+        raise HTTPException(status_code=400, detail="invalid_klipper_filename")
+    return path
+
+
+def _read_klipper_file(path: Path) -> str:
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"klipper_file_not_found:{path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"klipper_file_read_failed:{e}")
+
+
+def _write_klipper_file_atomic(path: Path, content: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if path.exists():
+            backup_path = path.with_suffix(path.suffix + ".bak")
+            shutil.copy2(path, backup_path)
+
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"klipper_file_write_failed:{e}")
 
 
 
@@ -788,6 +830,87 @@ def calibration_set(body: schemas.AdminCalibrationSetReq, request: Request, db: 
         "request_id": payload["request_id"],
         "command": payload["action"],
         "data": payload,
+    }
+
+
+@router.get("/klipper/file")
+def get_klipper_file(name: str):
+    path = _resolve_klipper_file(name)
+    return {
+        "ok": True,
+        "name": name,
+        "path": str(path),
+        "content": _read_klipper_file(path),
+    }
+
+
+@router.post("/klipper/file")
+def save_klipper_file(
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    name = str(body.get("name") or "").strip()
+    content = str(body.get("content") or "")
+
+    if not name:
+        raise HTTPException(status_code=400, detail="name_required")
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="empty_file_not_allowed")
+
+    path = _resolve_klipper_file(name)
+    _write_klipper_file_atomic(path, content)
+
+    uc.log_event(
+        db,
+        "admin:klipper_file_saved",
+        actor_type="admin",
+        actor_id=None,
+        request_id=None,
+        tool_item_id=None,
+        payload={
+            "name": name,
+            "path": str(path),
+            "size_bytes": len(content.encode("utf-8")),
+        },
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "name": name,
+        "path": str(path),
+        "message": f"Saved {name}",
+    }
+
+
+@router.post("/klipper/restart")
+def klipper_restart(
+    request: Request,
+    body: dict | None = Body(default=None),
+    db: Session = Depends(get_db),
+):
+    mode = str((body or {}).get("mode") or "restart_klipper").strip()
+    if mode not in {"restart_klipper", "firmware_restart"}:
+        raise HTTPException(status_code=400, detail="invalid_restart_mode")
+
+    payload = {
+        "request_id": _new_request_id("mach"),
+        "action": mode,
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/machine",
+        payload=payload,
+        event_type="admin:klipper_restart_requested",
+        db=db,
+    )
+
+    return {
+        "ok": True,
+        "message": f"Queued {mode}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
     }
 
 # ---------------- HARDWARE STATUS / CONSOLE ----------------
