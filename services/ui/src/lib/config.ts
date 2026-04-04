@@ -12,6 +12,6 @@ export const CONFIG = {
   apiBase: API_BASE,
   apiPrefix: "/api" as string,
   readerId: import.meta.env.VITE_READER_ID?.trim() || defaultReaderId,
-  cameraStreamUrl: buildCameraUrl(),
+  cameraStreamUrl: "/stream",
   stockRequestUrl: "https://ubcigenshop.notion.site/",
 };

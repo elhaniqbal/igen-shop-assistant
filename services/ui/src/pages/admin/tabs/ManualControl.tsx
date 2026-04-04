@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { CONFIG } from "../../../lib/config";
 import { apiAdmin, type HomeMode, type MachineAlert, type PendingHardwareWait } from "../../../lib/api.admin";
 import { BrandMark } from "../../../components/BrandMark";
 
@@ -245,14 +244,14 @@ export default function ManualControl() {
         </Card>
       ) : null}
 
-      <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+      <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
         <div className="space-y-5">
           <Card
             title="Mission Control"
-            subtitle="High-utility actions for homing, safety, and machine positioning."
+            subtitle="High-utility actions for homing, safety, restart, and machine positioning."
             right={<BrandMark size={64} spinning />}
           >
-            <div className="grid gap-3 md:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
               <ActionButton
                 label="Home Machine"
                 variant="primary"
@@ -274,6 +273,20 @@ export default function ManualControl() {
                 disabled={loading}
                 onClick={pingKlipper}
               />
+              <ActionButton
+                label="Restart Klipper"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.restartKlipper("restart_klipper"))}
+              />
+              <ActionButton
+                label="Firmware Restart"
+                variant="danger"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.restartKlipper("firmware_restart"))}
+              />
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-1 xl:grid-cols-2">
               <ActionButton
                 label="Emergency Stop"
                 variant="danger"
@@ -308,7 +321,10 @@ export default function ManualControl() {
             </div>
           </Card>
 
-          <Card title="Linear axes" subtitle="Use large touch-friendly jog buttons for gantry and horizontal movement.">
+          <Card
+            title="Relative jogs"
+            subtitle="Touch-friendly jog buttons for fast testing. Horizontal labels were flipped and are corrected here."
+          >
             <div className="mb-4 space-y-3">
               <div className="flex flex-wrap gap-2">
                 {LINEAR_STEP_OPTIONS.map((opt) => (
@@ -342,19 +358,35 @@ export default function ManualControl() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3 text-sm font-semibold text-slate-800">Vertical sync</div>
                 <div className="grid grid-cols-2 gap-3">
                   <ActionButton
                     label={`Up +${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "vertical", direction: "positive", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "vertical",
+                          direction: "positive",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                   <ActionButton
                     label={`Down -${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "vertical", direction: "negative", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "vertical",
+                          direction: "negative",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                 </div>
               </div>
@@ -365,15 +397,60 @@ export default function ManualControl() {
                   <ActionButton
                     label={`Left +${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "horizontal", direction: "positive", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "horizontal",
+                          direction: "negative",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                   <ActionButton
                     label={`Right -${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "horizontal", direction: "negative", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "horizontal",
+                          direction: "positive",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                 </div>
               </div>
+            </div>
+          </Card>
+
+          <Card
+            title="Absolute / positioning shortcuts"
+            subtitle="Safe high-level positioning actions using APIs already present in this screen."
+          >
+            <div className="grid gap-3 md:grid-cols-3">
+              <ActionButton
+                label="Go To Door"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.manualGoToDoor())}
+              />
+              <ActionButton
+                label="Home Machine"
+                variant="primary"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.manualHomeAll(homeMode))}
+              />
+              <ActionButton
+                label="Refresh Status"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.machineQueryStatus())}
+              />
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              I did not add raw absolute X/Z inputs here because this file does not show a confirmed backend API for them.
+              Once you paste the admin API methods, I can wire in true absolute X, Z, left-gantry, and right-gantry controls cleanly.
             </div>
           </Card>
 
@@ -511,6 +588,17 @@ export default function ManualControl() {
                   disabled={editorLoading}
                   onClick={() => loadEditorFile(editorFile)}
                 />
+                <ActionButton
+                  label="Restart Klipper"
+                  disabled={editorLoading}
+                  onClick={() => run(() => apiAdmin.restartKlipper("restart_klipper"))}
+                />
+                <ActionButton
+                  label="Firmware Restart"
+                  variant="danger"
+                  disabled={editorLoading}
+                  onClick={() => run(() => apiAdmin.restartKlipper("firmware_restart"))}
+                />
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -552,18 +640,6 @@ export default function ManualControl() {
         </div>
 
         <div className="space-y-5">
-          <Card title="Live camera" subtitle="Embedded crowsnest stream for remote supervision.">
-            <div className="aspect-[4/5] overflow-hidden rounded-[24px] border border-slate-200 bg-slate-950">
-              {CONFIG.cameraStreamUrl ? (
-                <img src={CONFIG.cameraStreamUrl} alt="Crowsnest stream" className="h-full w-full bg-black object-cover" />
-              ) : (
-                <div className="grid h-full place-items-center p-6 text-center text-sm text-slate-300">
-                  Set VITE_CAMERA_STREAM_URL or serve the stream at <span className="mx-1 font-mono">/stream</span>.
-                </div>
-              )}
-            </div>
-          </Card>
-
           <Card title="Alert stack" subtitle="Recent machine alerts surfaced from the backend.">
             <div className="space-y-3">
               {alerts.length === 0 ? (

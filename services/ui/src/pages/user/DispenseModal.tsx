@@ -122,30 +122,43 @@ export function DispenseModal({
   };
 
   const pollBatch = async (bid: string, i: number, q: QueueItem[]) => {
-    const st = await apiUser.dispenseStatus(bid);
-    setBatchItems(st.items);
+  const st = await apiUser.dispenseStatus(bid);
+  setBatchItems(st.items);
 
-    const pending = findPendingRequest(st.items);
-    setPendingRequestId(pending);
+  const pending = findPendingRequest(st.items);
+  setPendingRequestId(pending);
 
-    if (pending) {
-      setPhase("confirm_pickup");
-      stopPoll();
-      return;
-    }
-
-    if (!isFinished(st.items)) return;
-
+  if (pending) {
+    setPhase("confirm_pickup");
     stopPoll();
+    return;
+  }
 
-    const ok = st.items.some((x) => x.hw_status === "dispensed_ok" || x.hw_status === "succeeded");
-    if (!ok) {
-      await dispenseOne(i + 1, q);
-      return;
-    }
+  if (!isFinished(st.items)) return;
 
-    await dispenseOne(i + 1, q);
-  };
+  stopPoll();
+
+  const ok = st.items.some(
+    (x) => x.hw_status === "dispensed_ok" || x.hw_status === "succeeded"
+  );
+
+  if (!ok) {
+    const failed = st.items.find(
+      (x) => x.hw_status === "failed" || String(x.stage || "") === "failed"
+    );
+
+    setErr(
+      failed?.hw_error_reason ||
+        failed?.error_reason ||
+        failed?.hw_error_code ||
+        "Dispense failed."
+    );
+    setPhase("failed");
+    return;
+  }
+
+  await dispenseOne(i + 1, q);
+};
 
   const dispenseOne = async (i: number, q: QueueItem[]) => {
     stopPoll();
@@ -154,7 +167,7 @@ export function DispenseModal({
     if (!item) {
       setPhase("done");
       onDispenseCompleted();
-      window.setTimeout(() => onClose(), 900);
+      window.setTimeout(() => onClose(), 900000);
       return;
     }
 
