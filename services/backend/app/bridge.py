@@ -1418,7 +1418,7 @@ class Bridge2:
                         "target_slot": target_slot,
                     },
                 )
-                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={cake_id}")
+                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE_RET CAKE={cake_id}")
 
                 if exit_plan.delta_slots != 0:
                     self._publish_stage(
@@ -1523,7 +1523,7 @@ class Bridge2:
                 plan = build_rotation_plan(motor_id, 1, 0)
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
                 self._sleep_with_log(request_id, 5.0, "test return door dwell")
-                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={motor_id}")
+                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE_RET CAKE={motor_id}")
                 self._execute_rotation_plan(request_id, plan)
                 self._execute_return_settle(request_id, motor_id, plan.target_slot)
                 self._run_gcode(request_id, "SA_PARK")

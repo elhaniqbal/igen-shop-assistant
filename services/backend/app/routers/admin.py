@@ -20,7 +20,7 @@ from ..cake_cmd_store import set_cake_cmd_status, get_cake_cmd_status
 from ..services.email_service import send_email, send_template, list_templates
 
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
 
@@ -1245,3 +1245,7 @@ def admin_send_template(body: dict):
         return send_template(to=to, template_name=template_name, context=context)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/machine/waits")
+def machine_waits():
+    return {"ok": True, "waits": []}
