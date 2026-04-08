@@ -24,13 +24,16 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 MOONRAKER_URL = os.getenv("MOONRAKER_URL", "http://host.docker.internal:7125").rstrip("/")
 
+
 KLIPPER_CONFIG_DIR = Path(os.getenv("KLIPPER_CONFIG_DIR", "/klipper-config"))
 KLIPPER_VARS_FILE = Path(os.getenv("KLIPPER_VARS_FILE", str(KLIPPER_CONFIG_DIR / "vars.cfg")))
 KLIPPER_STEPPERS_FILE = Path(os.getenv("KLIPPER_STEPPERS_FILE", str(KLIPPER_CONFIG_DIR / "steppers.cfg")))
+KLIPPER_MACROS_FILE = Path(os.getenv("KLIPPER_MACROS_FILE", str(KLIPPER_CONFIG_DIR / "macros.cfg")))
 
 ALLOWED_KLIPPER_FILES = {
     "vars.cfg": KLIPPER_VARS_FILE,
     "steppers.cfg": KLIPPER_STEPPERS_FILE,
+    "macros.cfg": KLIPPER_MACROS_FILE,
 }
 
 
@@ -1249,3 +1252,70 @@ def admin_send_template(body: dict):
 @router.get("/machine/waits")
 def machine_waits():
     return {"ok": True, "waits": []}
+
+@router.post("/manual/run-macro", response_model=schemas.ManualCommandResp)
+def manual_run_macro(
+    body: schemas.ManualRunMacroReq,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    script = (body.script or "").strip()
+    if not script:
+        raise HTTPException(status_code=400, detail="script_required")
+    if "\n" in script or "\r" in script:
+        raise HTTPException(status_code=400, detail="multiline_gcode_not_allowed")
+
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "run_macro",
+        "script": script,
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_run_macro_requested",
+        db=db,
+    )
+
+    return {
+        "ok": True,
+        "message": f"Queued macro: {script}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+        "data": {"script": script},
+    }
+
+
+@router.post("/manual/jog-cake-delta", response_model=schemas.ManualCommandResp)
+def manual_jog_cake_delta(
+    body: schemas.ManualJogCakeDeltaReq,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if body.delta == 0:
+        raise HTTPException(status_code=400, detail="delta_must_not_be_zero")
+
+    payload = {
+        "request_id": _new_request_id("adm"),
+        "action": "jog_cake_delta",
+        "cake_id": body.cake_id,
+        "delta": body.delta,
+    }
+
+    _publish_admin_command(
+        request,
+        topic="igen/cmd/admin/manual",
+        payload=payload,
+        event_type="admin:manual_jog_cake_delta_requested",
+        db=db,
+    )
+
+    return {
+        "ok": True,
+        "message": f"Queued cake {body.cake_id} jog delta {body.delta}",
+        "request_id": payload["request_id"],
+        "command": payload["action"],
+        "data": {"cake_id": body.cake_id, "delta": body.delta},
+    }
