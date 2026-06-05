@@ -337,3 +337,11 @@ class ReturnBatchRequest(BaseModel):
 class ReturnBatchResponse(BaseModel):
     batch_id: str
     request_ids: List[str]
+
+class ManualJogCakeDeltaReq(BaseModel):
+    cake_id: int = Field(ge=1, le=32)
+    delta: int = Field(ge=-360, le=360)
+
+
+class ManualRunMacroReq(BaseModel):
+    script: str = Field(min_length=1, max_length=500)

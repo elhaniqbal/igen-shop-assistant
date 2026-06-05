@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { CONFIG } from "../../../lib/config";
-import { apiAdmin, type HomeMode, type MachineAlert, type PendingHardwareWait } from "../../../lib/api.admin";
+import {
+  apiAdmin,
+  type HomeMode,
+  type MachineAlert,
+  type PendingHardwareWait,
+} from "../../../lib/api.admin";
 import { BrandMark } from "../../../components/BrandMark";
 
 const LINEAR_STEP_OPTIONS = [100, 500, 1000, 5000, 10000];
-const CAKE_STEP_OPTIONS = [1, 2, 3, 4, 5, 6];
+const CAKE_STEP_OPTIONS = [1000, 2000, 5000, 10000];
 const CAKE_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 function Card({
@@ -76,22 +80,33 @@ function safePositiveInt(value: string, fallback: number) {
   return Math.max(1, Math.round(n));
 }
 
+function safeNonZeroInt(value: string, fallback: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  return rounded === 0 ? fallback : rounded;
+}
+
 export default function ManualControl() {
   const [linearStep, setLinearStep] = useState(1000);
   const [linearCustomStep, setLinearCustomStep] = useState("1000");
 
-  const [cakeStep, setCakeStep] = useState(1);
-  const [cakeCustomStep, setCakeCustomStep] = useState("1");
+  const [cakeStep, setCakeStep] = useState(1000);
+  const [cakeCustomStep, setCakeCustomStep] = useState("1000");
 
   const [selectedCake, setSelectedCake] = useState(1);
-  const [cakeDirection, setCakeDirection] = useState<"cw" | "ccw">("cw");
+  const [cakeDirection, setCakeDirection] = useState<"positive" | "negative">("positive");
+
   const [homeMode, setHomeMode] = useState<HomeMode>("python_assisted");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<any>(null);
   const [alerts, setAlerts] = useState<MachineAlert[]>([]);
   const [waits, setWaits] = useState<PendingHardwareWait[]>([]);
   const [lastMessage, setLastMessage] = useState("Ready");
-  const [editorFile, setEditorFile] = useState<"vars.cfg" | "steppers.cfg">("vars.cfg");
+
+  const [customMacro, setCustomMacro] = useState("");
+
+  const [editorFile, setEditorFile] = useState<"vars.cfg" | "steppers.cfg" | "macros.cfg">("vars.cfg");
   const [editorContent, setEditorContent] = useState("");
   const [editorLoading, setEditorLoading] = useState(false);
 
@@ -120,7 +135,7 @@ export default function ManualControl() {
       setLastMessage(res?.message || "Command queued");
       await refresh();
     } catch (e: any) {
-      setLastMessage(e?.message || "Command failed");
+      setLastMessage(e?.message || e?.detail || "Command failed");
     } finally {
       setLoading(false);
     }
@@ -148,7 +163,7 @@ export default function ManualControl() {
     }
   }
 
-  async function loadEditorFile(name: "vars.cfg" | "steppers.cfg") {
+  async function loadEditorFile(name: "vars.cfg" | "steppers.cfg" | "macros.cfg") {
     try {
       setEditorLoading(true);
       const res = await apiAdmin.getKlipperFile(name);
@@ -198,8 +213,6 @@ export default function ManualControl() {
     return status.state || status.klipper_state || "Ready";
   }, [status]);
 
-  const currentCakeSlot = Number(status?.active_cake_slot ?? 0) || 0;
-
   const applyLinearCustomStep = () => {
     const next = safePositiveInt(linearCustomStep, linearStep);
     setLinearStep(next);
@@ -211,6 +224,8 @@ export default function ManualControl() {
     setCakeStep(next);
     setCakeCustomStep(String(next));
   };
+
+  const signedCakeDelta = cakeDirection === "positive" ? cakeStep : -cakeStep;
 
   return (
     <div className="space-y-5">
@@ -245,14 +260,14 @@ export default function ManualControl() {
         </Card>
       ) : null}
 
-      <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+      <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
         <div className="space-y-5">
           <Card
             title="Mission Control"
-            subtitle="High-utility actions for homing, safety, and machine positioning."
+            subtitle="High-utility actions for homing, safety, restart, and machine status."
             right={<BrandMark size={64} spinning />}
           >
-            <div className="grid gap-3 md:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
               <ActionButton
                 label="Home Machine"
                 variant="primary"
@@ -274,6 +289,20 @@ export default function ManualControl() {
                 disabled={loading}
                 onClick={pingKlipper}
               />
+              <ActionButton
+                label="Restart Klipper"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.restartKlipper("restart_klipper"))}
+              />
+              <ActionButton
+                label="Firmware Restart"
+                variant="danger"
+                disabled={loading}
+                onClick={() => run(() => apiAdmin.restartKlipper("firmware_restart"))}
+              />
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-1 xl:grid-cols-2">
               <ActionButton
                 label="Emergency Stop"
                 variant="danger"
@@ -308,7 +337,10 @@ export default function ManualControl() {
             </div>
           </Card>
 
-          <Card title="Linear axes" subtitle="Use large touch-friendly jog buttons for gantry and horizontal movement.">
+          <Card
+            title="Relative jogs"
+            subtitle="Touch-friendly linear jog buttons for fast testing."
+          >
             <div className="mb-4 space-y-3">
               <div className="flex flex-wrap gap-2">
                 {LINEAR_STEP_OPTIONS.map((opt) => (
@@ -342,19 +374,35 @@ export default function ManualControl() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3 text-sm font-semibold text-slate-800">Vertical sync</div>
                 <div className="grid grid-cols-2 gap-3">
                   <ActionButton
                     label={`Up +${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "vertical", direction: "positive", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "vertical",
+                          direction: "positive",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                   <ActionButton
                     label={`Down -${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "vertical", direction: "negative", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "vertical",
+                          direction: "negative",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                 </div>
               </div>
@@ -363,21 +411,37 @@ export default function ManualControl() {
                 <div className="mb-3 text-sm font-semibold text-slate-800">Horizontal</div>
                 <div className="grid grid-cols-2 gap-3">
                   <ActionButton
-                    label={`Left +${linearStep}`}
+                    label={`Left -${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "horizontal", direction: "positive", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "horizontal",
+                          direction: "negative",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                   <ActionButton
-                    label={`Right -${linearStep}`}
+                    label={`Right +${linearStep}`}
                     disabled={loading}
-                    onClick={() => run(() => apiAdmin.manualJogAxis({ axis: "horizontal", direction: "negative", step: linearStep }))}
+                    onClick={() =>
+                      run(() =>
+                        apiAdmin.manualJogAxis({
+                          axis: "horizontal",
+                          direction: "positive",
+                          step: linearStep,
+                        })
+                      )
+                    }
                   />
                 </div>
               </div>
             </div>
           </Card>
 
-          <Card title="Cake positioning" subtitle="Move the selected cake by slot count using backend-managed current slot state.">
+          <Card title="Cake jog" subtitle="Select a cake and jog it with a signed delta. This sends SA_JOG_CAKE_REL CAKE={cake} DELTA={delta}.">
             <div className="grid gap-4 md:grid-cols-[0.9fr_1.1fr]">
               <div className="space-y-4">
                 <div>
@@ -398,7 +462,7 @@ export default function ManualControl() {
                 </div>
 
                 <div>
-                  <div className="mb-2 text-sm font-semibold text-slate-700">Slot count</div>
+                  <div className="mb-2 text-sm font-semibold text-slate-700">Step presets</div>
                   <div className="flex flex-wrap gap-2">
                     {CAKE_STEP_OPTIONS.map((opt) => (
                       <button
@@ -425,55 +489,57 @@ export default function ManualControl() {
                     value={cakeCustomStep}
                     onChange={(e) => setCakeCustomStep(e.target.value)}
                     className="w-40 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800"
-                    placeholder="Custom slots"
+                    placeholder="Custom step"
                   />
                   <ActionButton label="Use Custom" disabled={loading} onClick={applyCakeCustomStep} />
-                  <div className="text-sm text-slate-500">Current move: {cakeStep} slot{cakeStep > 1 ? "s" : ""}</div>
+                  <div className="text-sm text-slate-500">Current step: {cakeStep}</div>
                 </div>
               </div>
 
               <div className="rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#fff,#fff5f8)] p-5">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-sm font-semibold text-slate-800">Current backend slot</div>
-                    <div className="mt-1 text-3xl font-black text-slate-950">{currentCakeSlot}</div>
+                    <div className="text-sm font-semibold text-slate-800">Direction</div>
+                    <div className="mt-1 text-sm text-slate-500">Positive or negative relative jog</div>
                   </div>
 
                   <div className="flex gap-2">
                     <button
-                      onClick={() => setCakeDirection("ccw")}
+                      onClick={() => setCakeDirection("negative")}
                       className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
-                        cakeDirection === "ccw" ? "bg-slate-950 text-white" : "border border-slate-200 bg-white text-slate-700"
+                        cakeDirection === "negative" ? "bg-slate-950 text-white" : "border border-slate-200 bg-white text-slate-700"
                       }`}
                     >
-                      CCW
+                      Negative
                     </button>
                     <button
-                      onClick={() => setCakeDirection("cw")}
+                      onClick={() => setCakeDirection("positive")}
                       className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
-                        cakeDirection === "cw" ? "bg-rose-600 text-white" : "border border-slate-200 bg-white text-slate-700"
+                        cakeDirection === "positive" ? "bg-rose-600 text-white" : "border border-slate-200 bg-white text-slate-700"
                       }`}
                     >
-                      CW
+                      Positive
                     </button>
                   </div>
                 </div>
 
-                <div className="mt-4 text-sm text-slate-600">
-                  Manual cake moves use backend slot state, so the bridge receives current and target slot cleanly.
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  Command preview:
+                  <div className="mt-2 rounded-xl bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100">
+                    {`SA_JOG_CAKE_REL CAKE=${selectedCake} DELTA=${signedCakeDelta}`}
+                  </div>
                 </div>
 
                 <div className="mt-5">
                   <ActionButton
-                    label={`Move Cake ${selectedCake} by ${cakeStep} slot${cakeStep > 1 ? "s" : ""}`}
+                    label={`Jog Cake ${selectedCake}`}
                     variant="primary"
                     disabled={loading}
                     onClick={() =>
                       run(() =>
-                        apiAdmin.manualMoveCake({
+                        apiAdmin.manualJogCakeDelta({
                           cake_id: selectedCake,
-                          step: cakeStep,
-                          direction: cakeDirection,
+                          delta: signedCakeDelta,
                         })
                       )
                     }
@@ -483,7 +549,30 @@ export default function ManualControl() {
             </div>
           </Card>
 
-          <Card title="Klipper files" subtitle="Raw editor for host-mounted vars.cfg and steppers.cfg.">
+          <Card title="Macro runner" subtitle="Single-line macro/script runner only.">
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-2 text-sm font-semibold text-slate-800">Single-line G-code / macro</div>
+                <div className="flex flex-col gap-3 md:flex-row">
+                  <input
+                    type="text"
+                    value={customMacro}
+                    onChange={(e) => setCustomMacro(e.target.value)}
+                    className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800"
+                    placeholder="Example: SA_MOVE_TO_DOOR"
+                  />
+                  <ActionButton
+                    label="Run Macro"
+                    variant="primary"
+                    disabled={loading || !customMacro.trim()}
+                    onClick={() => run(() => apiAdmin.manualRunMacro({ script: customMacro.trim() }))}
+                  />
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Klipper files" subtitle="Raw editor for host-mounted vars.cfg, steppers.cfg, and macros.cfg.">
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
                 <button
@@ -506,10 +595,31 @@ export default function ManualControl() {
                 >
                   steppers.cfg
                 </button>
+                <button
+                  onClick={() => loadEditorFile("macros.cfg")}
+                  className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
+                    editorFile === "macros.cfg"
+                      ? "bg-rose-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  macros.cfg
+                </button>
                 <ActionButton
                   label="Reload"
                   disabled={editorLoading}
                   onClick={() => loadEditorFile(editorFile)}
+                />
+                <ActionButton
+                  label="Restart Klipper"
+                  disabled={editorLoading}
+                  onClick={() => run(() => apiAdmin.restartKlipper("restart_klipper"))}
+                />
+                <ActionButton
+                  label="Firmware Restart"
+                  variant="danger"
+                  disabled={editorLoading}
+                  onClick={() => run(() => apiAdmin.restartKlipper("firmware_restart"))}
                 />
               </div>
 
@@ -552,18 +662,6 @@ export default function ManualControl() {
         </div>
 
         <div className="space-y-5">
-          <Card title="Live camera" subtitle="Embedded crowsnest stream for remote supervision.">
-            <div className="aspect-[4/5] overflow-hidden rounded-[24px] border border-slate-200 bg-slate-950">
-              {CONFIG.cameraStreamUrl ? (
-                <img src={CONFIG.cameraStreamUrl} alt="Crowsnest stream" className="h-full w-full bg-black object-cover" />
-              ) : (
-                <div className="grid h-full place-items-center p-6 text-center text-sm text-slate-300">
-                  Set VITE_CAMERA_STREAM_URL or serve the stream at <span className="mx-1 font-mono">/stream</span>.
-                </div>
-              )}
-            </div>
-          </Card>
-
           <Card title="Alert stack" subtitle="Recent machine alerts surfaced from the backend.">
             <div className="space-y-3">
               {alerts.length === 0 ? (
@@ -573,11 +671,11 @@ export default function ManualControl() {
               ) : (
                 alerts.slice(0, 5).map((a, idx) => {
                   const ts =
-                    a.createdAt || a.created_at || a.ts || a.timestamp || null;
+                    (a as any).createdAt || (a as any).created_at || (a as any).ts || (a as any).timestamp || null;
 
                   return (
                     <div
-                      key={a.alert_id || a.event_id || idx}
+                      key={(a as any).alert_id || (a as any).event_id || idx}
                       className={`rounded-2xl border p-4 ${
                         a.severity === "critical" || a.severity === "error"
                           ? "border-rose-200 bg-rose-50"

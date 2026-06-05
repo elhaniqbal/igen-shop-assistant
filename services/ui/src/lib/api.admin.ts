@@ -11,6 +11,7 @@ export type User = {
   status: string;
 };
 export type AdminUserCreate = Partial<User>;
+
 export type ToolModel = {
   tool_model_id: string;
   name: string;
@@ -21,6 +22,7 @@ export type ToolModel = {
 };
 export type AdminToolModelCreate = Omit<ToolModel, "tool_model_id"> & { tool_model_id?: string | null };
 export type ToolModelPatch = Partial<Omit<ToolModel, "tool_model_id">>;
+
 export type ToolItem = {
   tool_item_id: string;
   tool_model_id: string;
@@ -31,7 +33,15 @@ export type ToolItem = {
   is_active: boolean;
 };
 export type AdminToolItemCreate = Omit<ToolItem, "tool_item_id"> & { tool_item_id?: string | null };
-export type InventoryRow = { tool_model_id: string; name: string; total: number; available: number; checked_out: number };
+
+export type InventoryRow = {
+  tool_model_id: string;
+  name: string;
+  total: number;
+  available: number;
+  checked_out: number;
+};
+
 export type LoanOut = {
   loan_id: string;
   user_id: string;
@@ -45,26 +55,97 @@ export type LoanOut = {
   returned_at?: string | null;
   status: string;
 };
-export type EventOut = { event_id: number; ts: string; event_type: string; actor_type: string; actor_id?: string | null; request_id?: string | null; tool_item_id?: string | null; payload_json: string };
+
+export type EventOut = {
+  event_id: number;
+  ts: string;
+  event_type: string;
+  actor_type: string;
+  actor_id?: string | null;
+  request_id?: string | null;
+  tool_item_id?: string | null;
+  payload_json: string;
+};
+
 export type UsagePoint = { day: string; dispenses: number; returns: number };
 export type MotorAction = "dispense" | "return";
 export type MotorTestReq = { motor_id: number; action: MotorAction };
 export type MotorTestStartResp = { request_id: string; motor_id: number; action: MotorAction };
 export type LoanPatch = Partial<Pick<LoanOut, "due_at" | "status" | "confirmed_at" | "returned_at">>;
 export type AdminLoanExtendResp = { ok: boolean; loan_id: string; due_at: string };
-export type MotorTestStatusResp = { request_id: string; stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed"; error_code?: string | null; error?: string | null };
+export type MotorTestStatusResp = {
+  request_id: string;
+  stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed";
+  error_code?: string | null;
+  error?: string | null;
+};
+
 export type AxisName = "horizontal" | "vertical";
 export type AxisDirection = "positive" | "negative";
 export type CakeMoveDirection = "cw" | "ccw";
 export type HomeMode = "python_assisted" | "true_synced" | "manual_independent";
+
 export type ManualJogAxisReq = { axis: AxisName; direction: AxisDirection; step: number };
 export type ManualMoveCakeReq = { cake_id: number; step: number; direction: CakeMoveDirection };
-export type ManualCommandResp = { ok: boolean; message: string; request_id?: string; command?: string; data?: any };
-export type ManualControlStatus = { ok?: boolean; reachable?: boolean; homed?: boolean; busy?: boolean; state?: string; klipper_state?: string | null; klipper_state_message?: string | null; horizontal_position?: number | string | null; vertical_position?: number | string | null; active_cake_id?: number | string | null; endstops?: Record<string, boolean | null>; vertical_tilted?: boolean | null; [key: string]: any };
+export type ManualJogCakeDeltaReq = { cake_id: number; delta: number };
+export type ManualRunMacroReq = { script: string };
+
+export type ManualCommandResp = {
+  ok: boolean;
+  message: string;
+  request_id?: string;
+  command?: string;
+  data?: any;
+};
+
+export type ManualControlStatus = {
+  ok?: boolean;
+  reachable?: boolean;
+  homed?: boolean;
+  busy?: boolean;
+  state?: string;
+  klipper_state?: string | null;
+  klipper_state_message?: string | null;
+  horizontal_position?: number | string | null;
+  vertical_position?: number | string | null;
+  active_cake_id?: number | string | null;
+  endstops?: Record<string, boolean | null>;
+  vertical_tilted?: boolean | null;
+  [key: string]: any;
+};
+
 export type MachineStatus = ManualControlStatus;
-export type MachineAlert = { alert_id?: string; id?: string; ts?: string; severity?: "critical" | "error" | "warning" | "info" | "success" | string; style?: string; source?: string; code?: string; message?: string; sticky?: boolean; ack_required?: boolean; related_request_id?: string | null; data?: Record<string, any> | null; event_id?: number };
-export type PendingHardwareWait = { request_id: string; action?: string; stage?: string; timeout_s?: number; message?: string };
-export type CalibrationStatus = { ok?: boolean; values?: Record<string, number | string | boolean | null>; raw?: Record<string, any> | null };
+
+export type MachineAlert = {
+  alert_id?: string;
+  id?: string;
+  ts?: string;
+  severity?: "critical" | "error" | "warning" | "info" | "success" | string;
+  style?: string;
+  source?: string;
+  code?: string;
+  message?: string;
+  sticky?: boolean;
+  ack_required?: boolean;
+  related_request_id?: string | null;
+  data?: Record<string, any> | null;
+  event_id?: number;
+};
+
+export type PendingHardwareWait = {
+  request_id: string;
+  action?: string;
+  stage?: string;
+  timeout_s?: number;
+  message?: string;
+};
+
+export type CalibrationStatus = {
+  ok?: boolean;
+  values?: Record<string, number | string | boolean | null>;
+  raw?: Record<string, any> | null;
+};
+
 export type CalibrationSetReq =
   | { action: "set_variable"; variable: string; value: number | string }
   | { action: "set_door_x"; value: number }
@@ -72,7 +153,15 @@ export type CalibrationSetReq =
   | { action: "set_door_z"; value: number }
   | { action: "set_cake_center"; cake_id: number; value: number }
   | { action: "set_cake_center_x"; cake_id: number; value: number };
-export type HardwareCmdResp = { ok: boolean; request_id: string; cake_id: number; command: string; eeprom: any | null };
+
+export type HardwareCmdResp = {
+  ok: boolean;
+  request_id: string;
+  cake_id: number;
+  command: string;
+  eeprom: any | null;
+};
+
 export type ReadEepromResp = {
   ok: boolean;
   cake_id: number;
@@ -83,6 +172,7 @@ export type ReadEepromResp = {
   error_reason?: string | null;
   headers?: Record<string, string>;
 };
+
 export type ReadAngleResp = {
   ok: boolean;
   cake_id: number;
@@ -92,14 +182,48 @@ export type ReadAngleResp = {
   error_code?: string | null;
   error_reason?: string | null;
 };
+
 export type CakeReadStartResp = { ok: boolean; request_id: string; cake_id: number };
 export type CakeHomeStartResp = { ok: boolean; request_id: string; cake_id: number };
-export type CakeHomeStatusResp = { request_id: string; cake_id: number; stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed"; error_code?: string | null; error_reason?: string | null };
-export type CronJobConfig = { id: string; name: string; enabled: boolean; schedule: string; description?: string; last_run_ts?: string | null; last_status?: "ok" | "error" | "unknown" | null };
-export type AlertRecipient = { id?: string; email: string; enabled: boolean; severity_threshold?: "warning" | "error" | "critical" };
-export type CakeOverview = { cake_id: string; current_slot: number; slots: { slot_index: number; tool_item_id: string | null }[] };
-export type KlipperFileName = "vars.cfg" | "steppers.cfg";
-export type KlipperFileResp = { ok: boolean; name: KlipperFileName; path: string; content: string; message?: string };
+export type CakeHomeStatusResp = {
+  request_id: string;
+  cake_id: number;
+  stage: "queued" | "accepted" | "in_progress" | "succeeded" | "failed";
+  error_code?: string | null;
+  error_reason?: string | null;
+};
+
+export type CronJobConfig = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: string;
+  description?: string;
+  last_run_ts?: string | null;
+  last_status?: "ok" | "error" | "unknown" | null;
+};
+
+export type AlertRecipient = {
+  id?: string;
+  email: string;
+  enabled: boolean;
+  severity_threshold?: "warning" | "error" | "critical";
+};
+
+export type CakeOverview = {
+  cake_id: string;
+  current_slot: number;
+  slots: { slot_index: number; tool_item_id: string | null }[];
+};
+
+export type KlipperFileName = "vars.cfg" | "steppers.cfg" | "macros.cfg";
+export type KlipperFileResp = {
+  ok: boolean;
+  name: KlipperFileName;
+  path: string;
+  content: string;
+  message?: string;
+};
 
 export const apiAdmin = {
   listUsers: (params?: { search?: string; role?: string; status?: string; limit?: number }) => {
@@ -194,6 +318,8 @@ export const apiAdmin = {
   manualStop: () => http<ManualCommandResp>(EP.adminManualStop, { method: "POST" }),
   manualJogAxis: (req: ManualJogAxisReq) => http<ManualCommandResp>(EP.adminManualJogAxis, { method: "POST", json: req }),
   manualMoveCake: (req: ManualMoveCakeReq) => http<ManualCommandResp>(EP.adminManualMoveCake, { method: "POST", json: req }),
+  manualJogCakeDelta: (req: ManualJogCakeDeltaReq) => http<ManualCommandResp>(EP.adminManualJogCakeDelta, { method: "POST", json: req }),
+  manualRunMacro: (req: ManualRunMacroReq) => http<ManualCommandResp>(EP.adminManualRunMacro, { method: "POST", json: req }),
 
   machineStatus: () => http<MachineStatus>(EP.adminMachineStatus),
   machineQueryStatus: () => http<ManualCommandResp>(EP.adminMachineQueryStatus, { method: "POST" }),
@@ -208,6 +334,7 @@ export const apiAdmin = {
       return [];
     }
   },
+
   hardwareWaits: async () => {
     try {
       return await http<{ waits?: PendingHardwareWait[] }>(EP.adminHardwareWaits);
@@ -215,6 +342,7 @@ export const apiAdmin = {
       return { waits: [] };
     }
   },
+
   hardwareConfirmRequest: (requestId: string) =>
     http<{ ok: boolean; request_id: string }>(`/api/admin/hardware/requests/${encodeURIComponent(requestId)}/confirm`, { method: "POST" }),
   hardwareCancelRequest: (requestId: string) =>
@@ -257,7 +385,6 @@ export const apiAdmin = {
     const data = await http<{ recipients?: AlertRecipient[] } | AlertRecipient[]>(EP.adminCronAlertRecipients);
     return Array.isArray(data) ? data : (data.recipients ?? []);
   },
-
 
   getKlipperFile: (name: KlipperFileName) =>
     http<KlipperFileResp>(`/api/admin/klipper/file?name=${encodeURIComponent(name)}`),

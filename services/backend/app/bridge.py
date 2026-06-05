@@ -1,4 +1,4 @@
-from __future__ import annotations
+# from __future__ import annotations
 
 import json
 import os
@@ -39,9 +39,9 @@ SERIAL_TIMEOUT_S = float(os.getenv("SERIAL_TIMEOUT_S", "1.5"))
 ENCODER_TOLERANCE_DEG = float(os.getenv("ENCODER_TOLERANCE_DEG", "8.0"))
 
 DONE_TIMEOUT_MS = int(os.getenv("DONE_TIMEOUT_MS", "30000"))
-WAIT_IDLE = os.getenv("WAIT_IDLE", "1") == "1"
+WAIT_IDLE = os.getenv("WAIT_IDLE", "0") == "1"
 IDLE_POLL_INTERVAL_S = float(os.getenv("IDLE_POLL_INTERVAL_S", "0.35"))
-MOONRAKER_HTTP_TIMEOUT_S = float(os.getenv("MOONRAKER_HTTP_TIMEOUT_S", "5.0"))
+MOONRAKER_HTTP_TIMEOUT_S = float(os.getenv("MOONRAKER_HTTP_TIMEOUT_S", "5000.0"))
 
 SIM_FAIL_RATE = float(os.getenv("SIM_FAIL_RATE", "0.08"))
 SIM_MIN_TIME_S = float(os.getenv("SIM_MIN_TIME_S", "0.4"))
@@ -53,7 +53,8 @@ IGNORE_RETAINED = os.getenv("IGNORE_RETAINED", "0") == "1"
 
 DOOR_CONFIRM_TIMEOUT_S = float(os.getenv("DOOR_CONFIRM_TIMEOUT_S", "20"))
 DEFAULT_HOME_MODE = os.getenv("DEFAULT_HOME_MODE", "python_assisted").lower()
-VERTICAL_HOME_SCRIPT = os.getenv("VERTICAL_HOME_SCRIPT", "/app/scripts/vertical_home.py")
+VERTICAL_HOME_SCRIPT = os.getenv("VERTICAL_HOME_SCRIPT", "/app/vertical_home.py")
+VERTICAL_HOME_TIMEOUT_S = float(os.getenv("VERTICAL_HOME_TIMEOUT_S", "180000"))
 
 SLOTS_PER_CAKE = int(os.getenv("SLOTS_PER_CAKE", "6"))
 DEG_PER_SLOT = float(os.getenv("DEG_PER_SLOT", "60.0"))
@@ -197,6 +198,7 @@ def build_bounded_return_exit_plan(cake_id: int, current_slot: int) -> RotationP
         script=build_rotation_script(cake_id, "CCW", 1),
     )
 
+
 def cmd(topic: str):
     def deco(fn: CmdHandler) -> CmdHandler:
         Bridge2.CMD_HANDLERS[topic] = fn
@@ -272,11 +274,23 @@ class MoonrakerClient:
     def get_server_info(self) -> dict:
         return self._json_request("GET", "/server/info")
 
+    def get_printer_info(self) -> dict:
+        return self._json_request("GET", "/printer/info")
+
     def get_printer_status(self) -> dict:
         query = parse.urlencode({
             "toolhead": "homed_axes,position",
             "idle_timeout": "state",
             "print_stats": "state,message",
+        })
+        return self._json_request("GET", f"/printer/objects/query?{query}")
+
+    def query_endstops_status(self) -> dict:
+        return self._json_request("GET", "/printer/query_endstops/status")
+
+    def get_sa_state(self) -> dict:
+        query = parse.urlencode({
+            "gcode_macro SA_STATE": "homed,x_pos,z_pos,current_slot"
         })
         return self._json_request("GET", f"/printer/objects/query?{query}")
 
@@ -291,19 +305,6 @@ class MoonrakerClient:
 
     def restart_service(self, service: str = "klipper") -> dict:
         return self._json_request("POST", "/machine/services/restart", {"service": service})
-
-    def wait_until_idle(self, timeout_s: float, poll_interval_s: float = 0.35) -> dict:
-        deadline = time.monotonic() + timeout_s
-        last = {}
-        while time.monotonic() < deadline:
-            last = self.get_printer_status()
-            status = last.get("result", {}).get("status", {})
-            idle_state = str(status.get("idle_timeout", {}).get("state", "")).lower()
-            print_state = str(status.get("print_stats", {}).get("state", "")).lower()
-            if idle_state == "idle" and print_state not in {"error", "shutdown"}:
-                return last
-            time.sleep(poll_interval_s)
-        raise BridgeError("KLIPPER_BUSY_TIMEOUT", f"Klipper did not become idle within {timeout_s:.1f}s")
 
 
 class EncoderClient:
@@ -369,7 +370,7 @@ class EncoderClient:
     def _parse_ok_kv(self, raw: str) -> dict:
         parts = raw.split()
         out: dict[str, str] = {}
-        for p in parts[1:]:  # skip leading OK
+        for p in parts[1:]:
             if "=" not in p:
                 continue
             k, v = p.split("=", 1)
@@ -665,22 +666,77 @@ class Bridge2:
             handler(self, payload)
 
     def _query_machine_status(self) -> dict:
-        resp = self.moonraker.get_printer_status()
-        status = resp.get("result", {}).get("status", {})
-        homed_axes = str(status.get("toolhead", {}).get("homed_axes", ""))
+        printer = self.moonraker.get_printer_status()
+        status = printer.get("result", {}).get("status", {})
+
+        printer_info = self.moonraker.get_printer_info()
+        printer_info_result = printer_info.get("result", printer_info)
+        printer_state = str(printer_info_result.get("state", "")).lower()
+        printer_state_message = printer_info_result.get("state_message")
+
+        endstops_raw = self.moonraker.query_endstops_status()
+        endstops = endstops_raw.get("result", endstops_raw)
+
+        norm_endstops = {str(k).strip().lower(): str(v).strip().lower() for k, v in endstops.items()}
+
+        sa_state_resp = self.moonraker.get_sa_state()
+        sa_state = (
+            sa_state_resp.get("result", {})
+            .get("status", {})
+            .get("gcode_macro SA_STATE", {})
+        )
+
+        sa_homed_raw = sa_state.get("homed", 0)
+        try:
+            sa_homed = bool(int(sa_homed_raw))
+        except Exception:
+            sa_homed = bool(sa_homed_raw)
+
+        left_endstop = norm_endstops.get("manual_stepper gantry1")
+        right_endstop = norm_endstops.get("manual_stepper gantry2")
+        horiz_endstop = norm_endstops.get("manual_stepper horiz")
+
         return {
-            "homed": set("xyz").issubset(set(homed_axes)),
+            "homed": sa_homed,
             "position": status.get("toolhead", {}).get("position"),
             "idle": str(status.get("idle_timeout", {}).get("state", "")).lower() == "idle",
             "print_state": str(status.get("print_stats", {}).get("state", "")).lower(),
             "print_message": status.get("print_stats", {}).get("message"),
+            "printer_state": printer_state,
+            "printer_state_message": printer_state_message,
+            "endstops": norm_endstops,
+            "left_endstop": left_endstop,
+            "right_endstop": right_endstop,
+            "horizontal_endstop": horiz_endstop,
+            "sa_state": sa_state,
         }
 
     def _ensure_machine_ready(self) -> dict:
-        self.moonraker.get_server_info()
+        server = self.moonraker.get_server_info()
+        server_info = server.get("result", server)
+        klippy_state = str(server_info.get("klippy_state", "")).lower()
+
+        if klippy_state in {"shutdown", "error", "disconnected"}:
+            raise BridgeError(
+                "KLIPPER_IN_ERROR_STATE",
+                f"Moonraker klippy_state={klippy_state}"
+            )
+
         st = self._query_machine_status()
+
+        printer_state = str(st.get("printer_state", "")).lower()
+        if printer_state and printer_state != "ready":
+            raise BridgeError(
+                "KLIPPER_NOT_READY",
+                f"Printer state={printer_state} message={st.get('printer_state_message')}"
+            )
+
         if st["print_state"] in {"error", "shutdown"}:
-            raise BridgeError("KLIPPER_IN_ERROR_STATE", f"Klipper state={st['print_state']} message={st['print_message']}")
+            raise BridgeError(
+                "KLIPPER_IN_ERROR_STATE",
+                f"Klipper print_state={st['print_state']} message={st['print_message']}"
+            )
+
         return st
 
     def _wait_idle_if_needed(self):
@@ -690,24 +746,38 @@ class Bridge2:
     @with_timeout(max(15.0, MOONRAKER_HTTP_TIMEOUT_S + 5.0))
     def _run_gcode(self, request_id: str, script: str):
         pretty = " | ".join(line.strip() for line in script.splitlines() if line.strip())
-        print(f"[BRIDGE2][RID={request_id}] gcode -> {pretty}")
-        self.moonraker.send_gcode(script)
-        self._wait_idle_if_needed()
+        print(f"[BRIDGE2][RID={request_id}] >>> SENDING GCODE >>> {pretty}")
+        try:
+            self.moonraker.send_gcode(script)
+            print(f"[BRIDGE2][RID={request_id}] <<< GCODE SENT OK <<< {pretty}")
+        except Exception as e:
+            print(f"[BRIDGE2][RID={request_id}] !!! GCODE FAILED !!! {pretty} err={e}")
+            raise
+        if WAIT_IDLE:
+            self._wait_idle_if_needed()
 
-    @with_timeout(70.0)
+    @with_timeout(VERTICAL_HOME_TIMEOUT_S + 30.0)
     def _run_vertical_home_script(self):
+        print(f"[BRIDGE2][HOME] running vertical home script: {VERTICAL_HOME_SCRIPT}")
+        print(f"[BRIDGE2][HOME] timeout_s={VERTICAL_HOME_TIMEOUT_S}")
         try:
             proc = subprocess.run(
                 ["python3", VERTICAL_HOME_SCRIPT],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=VERTICAL_HOME_TIMEOUT_S,
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            raise BridgeError("VERT_HOME_TIMEOUT", "Python-assisted vertical home timed out")
+            raise BridgeError("VERT_HOME_TIMEOUT", f"Python-assisted vertical home timed out after {VERTICAL_HOME_TIMEOUT_S:.1f}s")
         except Exception as e:
             raise BridgeError("VERT_HOME_SCRIPT_FAIL", f"Could not launch vertical home script: {e}")
+
+        print(f"[BRIDGE2][HOME] vertical home rc={proc.returncode}")
+        if proc.stdout:
+            print(f"[BRIDGE2][HOME][STDOUT] {proc.stdout}")
+        if proc.stderr:
+            print(f"[BRIDGE2][HOME][STDERR] {proc.stderr}")
 
         if proc.returncode != 0:
             raise BridgeError(
@@ -718,8 +788,8 @@ class Bridge2:
     def _home_machine(self, request_id: str, mode: str):
         mode = (mode or DEFAULT_HOME_MODE).lower()
         if mode == "python_assisted":
-            self._run_gcode(request_id, "SA_HOME_HORIZONTAL")
             self._run_vertical_home_script()
+            self._run_gcode(request_id, "SA_HOME_HORIZONTAL")
             self._run_gcode(request_id, "SET_GCODE_VARIABLE MACRO=SA_STATE VARIABLE=homed VALUE=1")
             return
         if mode == "true_synced":
@@ -808,22 +878,34 @@ class Bridge2:
         self._verify_rotation_plan(request_id, plan, before, after)
 
     def _execute_dispense_rotation(self, request_id: str, plan: RotationPlan):
+        print(f"[BRIDGE2][RID={request_id}] ===== DISPENSE ROTATION START =====")
         print(
-            f"[BRIDGE2][RID={request_id}] dispense cake sequence cake={plan.cake_id} "
-            f"target_slot={plan.target_slot}: SA_ROTATE_TO_SLOT -> SA_ROTATE_TO_DISPENSE"
+            f"[BRIDGE2][RID={request_id}] cake={plan.cake_id} "
+            f"source_slot={plan.source_slot} target_slot={plan.target_slot} "
+            f"delta_slots={plan.delta_slots} dir={plan.direction}"
         )
         before = self._read_encoder_angle_if_enabled(plan.cake_id)
-        self._run_gcode(request_id, f"SA_ROTATE_TO_SLOT CAKE={plan.cake_id} SLOT={plan.target_slot}")
-        self._run_gcode(request_id, f"SA_ROTATE_TO_DISPENSE CAKE={plan.cake_id} SLOT={plan.target_slot}")
+
+        if plan.delta_slots != 0:
+            print(f"[BRIDGE2][RID={request_id}] -> RAW SLOT ROTATION via MOVE_CAKE_CW_60 / MOVE_CAKE_CCW_60")
+            self._execute_rotation_plan(request_id, plan)
+        else:
+            print(f"[BRIDGE2][RID={request_id}] -> NO SLOT ROTATION NEEDED (delta=0)")
+
+        print(f"[BRIDGE2][RID={request_id}] -> ROTATE TO DISPENSE")
+        self._run_gcode(request_id, f"SA_ROTATE_TO_DISPENSE CAKE={plan.cake_id}")
+
         after = self._read_encoder_angle_if_enabled(plan.cake_id)
+        print(f"[BRIDGE2][RID={request_id}] ===== DISPENSE ROTATION END =====")
         self._verify_rotation_plan(request_id, plan, before, after)
 
     def _execute_return_settle(self, request_id: str, cake_id: int, target_slot: int):
         print(
             f"[BRIDGE2][RID={request_id}] return settle cake={cake_id} target_slot={target_slot} "
-            f"using SA_ROTATE_TO_SLOT"
+            f"using SA_ROTATE_TO_SLOT + SA_ROTATE_TO_RETURN"
         )
         self._run_gcode(request_id, f"SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={target_slot}")
+        self._run_gcode(request_id, f"SA_ROTATE_TO_RETURN CAKE={cake_id}")
 
     def _dispatch_async(self, target, *args):
         threading.Thread(target=target, args=args, daemon=True).start()
@@ -906,7 +988,7 @@ class Bridge2:
                     print(
                         f"[BRIDGE2][SIM][DISPENSE][RID={request_id}] "
                         f"would run: SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={target_slot} "
-                        f"then SA_ROTATE_TO_DISPENSE CAKE={cake_id} SLOT={target_slot}"
+                        f"then SA_ROTATE_TO_DISPENSE CAKE={cake_id}"
                     )
                     time.sleep(SIM_MIN_TIME_S)
 
@@ -1006,7 +1088,8 @@ class Bridge2:
                         self._publish_stage(action, request_id, "rotate_cake")
                         print(
                             f"[BRIDGE2][SIM][RETURN][RID={request_id}] "
-                            f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={final_current_slot}"
+                            f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={cake_id} SLOT={final_current_slot} "
+                            f"then SA_ROTATE_TO_RETURN CAKE={cake_id}"
                         )
                         time.sleep(SIM_MIN_TIME_S)
 
@@ -1080,6 +1163,16 @@ class Bridge2:
                 self._sim_state["active_cake_id"] = int(payload.get("cake_id", 0) or 0)
             elif action == "move_cake":
                 self._sim_state["active_cake_id"] = int(payload.get("cake_id", 0) or 0)
+            elif action == "jog_cake_delta":
+                self._sim_state["active_cake_id"] = int(payload.get("cake_id", 0) or 0)
+                self._sim_state["state"] = "idle"
+            elif action == "run_macro":
+                script = str(payload.get("script", "")).strip()
+                if not script:
+                    raise BridgeError("BAD_PAYLOAD", "missing script")
+                upper = script.upper()
+                if upper.startswith("SA_MOVE_TO_DOOR"):
+                    self._sim_state["state"] = "idle"
             elif action == "jog_axis":
                 axis = str(payload.get("axis", "")).lower()
                 direction = str(payload.get("direction", "")).lower()
@@ -1101,6 +1194,8 @@ class Bridge2:
         except BridgeError as e:
             self._publish_stage("admin_manual", rid, "failed", error_code=e.code, error_reason=e.reason)
             self._publish_alert(code=e.code, message=e.reason, severity="error", related_request_id=rid)
+        finally:
+            self._release_machine(rid)
 
     def _simulate_admin_machine(self, payload: dict):
         rid = str(payload["request_id"])
@@ -1138,7 +1233,7 @@ class Bridge2:
             if action_name == "dispense":
                 print(
                     f"[BRIDGE2][SIM][MOTOR_TEST][RID={request_id}] "
-                    f"would run: SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=1 then SA_ROTATE_TO_DISPENSE CAKE={motor_id} SLOT=1"
+                    f"would run: SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=1 then SA_ROTATE_TO_DISPENSE CAKE={motor_id}"
                 )
                 self._sleep_with_log(request_id, 0.6, "sim move to cake")
                 self._sleep_with_log(request_id, 0.6, "sim rotate")
@@ -1148,12 +1243,14 @@ class Bridge2:
             elif action_name == "return":
                 print(
                     f"[BRIDGE2][SIM][MOTOR_TEST][RID={request_id}] "
-                    f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=0"
+                    f"would run raw 60deg rotation(s) then SA_ROTATE_TO_SLOT CAKE={motor_id} SLOT=0 "
+                    f"then SA_ROTATE_TO_RETURN CAKE={motor_id}"
                 )
                 self._sleep_with_log(request_id, 0.6, "sim move to door")
                 self._sleep_with_log(request_id, 5.0, "sim door dwell")
                 self._sleep_with_log(request_id, 0.6, "sim move to cake")
                 self._sleep_with_log(request_id, 0.6, "sim rotate")
+                self._sleep_with_log(request_id, 0.6, "sim return settle")
                 self._sleep_with_log(request_id, 0.6, "sim park from cake")
             else:
                 self._publish_motor_test_stage(
@@ -1182,8 +1279,6 @@ class Bridge2:
         try:
             self._publish_stage(action, request_id, "accepted")
             st = self._ensure_machine_ready()
-            if not st["homed"]:
-                raise BridgeError("MACHINE_UNHOMED", "Klipper reports machine is not homed")
 
             self._publish_stage(action, request_id, "in_progress")
 
@@ -1214,7 +1309,9 @@ class Bridge2:
                         "target_slot": plan.target_slot,
                     },
                 )
+                print(f"[BRIDGE2][RID={request_id}] >>> ABOUT TO EXECUTE DISPENSE ROTATION <<<")
                 self._execute_dispense_rotation(request_id, plan)
+                print(f"[BRIDGE2][RID={request_id}] >>> DISPENSE ROTATION COMPLETE <<<")
 
                 self._publish_stage(action, request_id, "move_to_door")
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
@@ -1239,7 +1336,7 @@ class Bridge2:
                         raise
 
                 self._publish_stage(action, request_id, "park")
-                self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
+                self._run_gcode(request_id, "SA_PARK")
                 print(
                     f"[BRIDGE2][DISPENSE][RID={request_id}] "
                     f"publishing success cake={plan.cake_id} source_slot={plan.source_slot} "
@@ -1315,7 +1412,7 @@ class Bridge2:
                             f"user did not place item in time -> parking and failing"
                         )
                         self._publish_stage(action, request_id, "park")
-                        self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
+                        self._run_gcode(request_id, "SA_PARK")
                         raise BridgeError("USER_INSERT_TIMEOUT", "Timed out waiting for user to place the tool in the slice")
                     raise
 
@@ -1329,7 +1426,7 @@ class Bridge2:
                         "target_slot": target_slot,
                     },
                 )
-                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={cake_id}")
+                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE_RET CAKE={cake_id}")
 
                 if exit_plan.delta_slots != 0:
                     self._publish_stage(
@@ -1347,7 +1444,7 @@ class Bridge2:
                     self._execute_return_settle(request_id, cake_id, exit_plan.target_slot)
 
                 self._publish_stage(action, request_id, "park")
-                self._run_gcode(request_id, "SA_PARK_FROM_CAKE")
+                self._run_gcode(request_id, "SA_PARK")
 
                 print(
                     f"[BRIDGE2][RETURN][RID={request_id}] "
@@ -1429,15 +1526,15 @@ class Bridge2:
                 self._execute_dispense_rotation(request_id, plan)
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
                 self._sleep_with_log(request_id, 5.0, "test dispense door dwell")
-                self._run_gcode(request_id, "SA_PARK_FROM_DOOR")
+                self._run_gcode(request_id, "SA_PARK")
             elif action_name == "return":
                 plan = build_rotation_plan(motor_id, 1, 0)
                 self._run_gcode(request_id, "SA_MOVE_TO_DOOR")
                 self._sleep_with_log(request_id, 5.0, "test return door dwell")
-                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE CAKE={motor_id}")
+                self._run_gcode(request_id, f"SA_MOVE_TO_CAKE_RET CAKE={motor_id}")
                 self._execute_rotation_plan(request_id, plan)
                 self._execute_return_settle(request_id, motor_id, plan.target_slot)
-                self._run_gcode(request_id, "SA_PARK_FROM_CAKE")
+                self._run_gcode(request_id, "SA_PARK")
             else:
                 raise BridgeError("BAD_PAYLOAD", f"unsupported motor test action: {action_name}")
 
@@ -1456,6 +1553,14 @@ class Bridge2:
     def _execute_admin_manual(self, payload: dict):
         rid = str(payload["request_id"])
         action = str(payload.get("action", "")).lower()
+
+        print(f"[BRIDGE2][ADMIN_MANUAL][RID={rid}] received payload={payload}")
+
+        if not self._try_claim_machine(rid, "admin_manual", payload):
+            print(f"[BRIDGE2][ADMIN_MANUAL][RID={rid}] machine busy -> rejecting admin manual command")
+            self._publish_stage("admin_manual", rid, "failed", error_code="BUSY", error_reason="machine busy")
+            return
+
         try:
             self._publish_stage("admin_manual", rid, "accepted")
 
@@ -1491,6 +1596,17 @@ class Bridge2:
                         "direction": plan.direction,
                     },
                 )
+            elif action == "jog_cake_delta":
+                cake_id = self._require_int(payload, "cake_id")
+                delta = int(payload.get("delta", 0))
+                if delta == 0:
+                    raise BridgeError("BAD_PAYLOAD", "delta must not be zero")
+                self._run_gcode(rid, f"SA_JOG_CAKE_REL CAKE={cake_id} DELTA={delta}")
+            elif action == "run_macro":
+                script = str(payload.get("script", "")).strip()
+                if not script:
+                    raise BridgeError("BAD_PAYLOAD", "missing script")
+                self._run_gcode(rid, script)
             elif action == "set_cake_zero":
                 cake_id = self._require_int(payload, "cake_id")
                 if self.encoder:
@@ -1535,10 +1651,22 @@ class Bridge2:
         except BridgeError as e:
             self._publish_stage("admin_manual", rid, "failed", error_code=e.code, error_reason=e.reason)
             self._publish_alert(code=e.code, message=e.reason, severity="error", related_request_id=rid)
+        finally:
+            print(f"[BRIDGE2][ADMIN_MANUAL][RID={rid}] releasing machine")
+            self._release_machine(rid)
 
     def _execute_admin_machine(self, payload: dict):
         rid = str(payload["request_id"])
         action = str(payload.get("action", "")).lower()
+
+        print(f"[BRIDGE2][ADMIN_MACHINE][RID={rid}] received payload={payload}")
+
+        if action not in {"query_status"}:
+            if not self._try_claim_machine(rid, "admin_machine", payload):
+                print(f"[BRIDGE2][ADMIN_MACHINE][RID={rid}] machine busy -> rejecting admin machine command")
+                self._publish_stage("admin_machine", rid, "failed", error_code="BUSY", error_reason="machine busy")
+                return
+
         try:
             self._publish_stage("admin_machine", rid, "accepted")
             if action == "query_status":
@@ -1562,6 +1690,9 @@ class Bridge2:
         except BridgeError as e:
             self._publish_stage("admin_machine", rid, "failed", error_code=e.code, error_reason=e.reason)
             self._publish_alert(code=e.code, message=e.reason, severity="error", related_request_id=rid)
+        finally:
+            if action not in {"query_status"}:
+                self._release_machine(rid)
 
     def _execute_admin_cal(self, payload: dict):
         rid = str(payload["request_id"])
@@ -1713,9 +1844,6 @@ def handle_admin_test_motor(self: Bridge2, payload: dict):
         self._dispatch_async(self._execute_motor_test, payload)
 
 
-# IMPORTANT:
-# Do NOT dedup confirm/cancel. They intentionally reuse the same request_id
-# as the original dispense/return request, so dedup would drop them.
 @cmd(TOPIC_CMD_HW_CONFIRM)
 def handle_hw_confirm(self: Bridge2, payload: dict):
     request_id = str(payload["request_id"])

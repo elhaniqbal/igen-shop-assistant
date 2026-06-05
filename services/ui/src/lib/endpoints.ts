@@ -44,6 +44,8 @@ export const EP = {
   adminManualStop: "/api/admin/manual/stop",
   adminManualJogAxis: "/api/admin/manual/jog-axis",
   adminManualMoveCake: "/api/admin/manual/move-cake",
+  adminManualRunMacro: "/api/admin/manual/run-macro",
+  adminManualJogCakeDelta: "/api/admin/manual/jog-cake-delta",
   adminMachineStatus: "/api/admin/machine/status",
   adminMachineQueryStatus: "/api/admin/machine/query-status",
   adminMachineRestartKlipper: "/api/admin/machine/restart-klipper",
@@ -61,6 +63,5 @@ export const EP = {
   adminCronRunHealthcheck: "/api/admin/cron/run-healthcheck",
   adminCronRunEmailTest: "/api/admin/cron/run-email-test",
   adminCronAlertRecipients: "/api/admin/cron/alert-recipients",
-  // 🔴 FIX: ADMIN CONFIRM ENDPOINT
   adminLoanConfirm: (loanId: string) => `/api/admin/loans/${loanId}/confirm`,
-}
+};
