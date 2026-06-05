@@ -190,7 +190,7 @@ export default function Users() {
         <AssignCardModal
           open={true}
           user={modal.user}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           onClose={() => setModal(null)}
           onDone={load}
         />
@@ -256,7 +256,7 @@ function UserModal({
             </Field>
             <Field label="Status">
               <select className="w-full rounded-xl border px-3 py-2" value={v.status} onChange={(e) => setV({ ...v, status: e.target.value })}>
-                {["active", "good", "delinquent", "disabled"].map((x) => <option key={x} value={x}>{x}</option>)}
+                {["active", "good", "delinquent", "banned", "disabled"].map((x) => <option key={x} value={x}>{x}</option>)}
               </select>
             </Field>
           </div>

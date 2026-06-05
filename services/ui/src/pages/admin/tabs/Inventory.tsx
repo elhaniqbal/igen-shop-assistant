@@ -18,6 +18,9 @@ const CONDITION_OPTIONS: { value: ConditionStatus; label: string }[] = [
   { value: "missing_parts", label: "missing_parts" },
 ];
 
+const CAKE_OPTIONS = ["cake_1", "cake_2", "cake_3", "cake_4", "cake_5", "cake_6"] as const;
+const SLOT_OPTIONS = ["1", "2", "3", "4", "5"] as const;
+
 type ModelForm = {
   name: string;
   category: string;
@@ -45,10 +48,10 @@ type ItemForm = {
 
 type ItemRowView = ToolItem & {
   loan_status: "AVAILABLE" | "CHECKED_OUT";
-  holder_name: string; // First Last
+  holder_name: string;
   due_at: string | null;
   loan_id: string | null;
-  loan_state: string | null; // active/overdue/unconfirmed/etc
+  loan_state: string | null;
 };
 
 export default function Inventory() {
@@ -167,7 +170,7 @@ export default function Inventory() {
       if (!confirm("Drop this UNCONFIRMED checked-out item from inventory? This will cancel the unconfirmed loan and deactivate the item.")) return;
       setBusyKey(`drop:${tool_item_id}`);
       setErr(null);
-      await apiAdmin.dropUnconfirmedToolItem(tool_item_id);
+      await (apiAdmin as any).dropUnconfirmedToolItem(tool_item_id);
       await load();
     } catch (e: any) {
       setErr(msg(e));
@@ -178,14 +181,13 @@ export default function Inventory() {
 
   return (
     <div className="space-y-6">
-      {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+      {err ? <div className="rounded-xl border bg-rose-50 p-3 text-sm text-rose-700">{err}</div> : null}
 
-      {/* TOOL MODELS */}
       <div className="rounded-2xl border bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
             <div className="font-semibold">Tool Models</div>
-            <div className="text-sm text-slate-600 mt-1">Define the catalog of tools</div>
+            <div className="mt-1 text-sm text-slate-600">Define the catalog of tools</div>
           </div>
           <div className="flex gap-2">
             <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={load}>
@@ -213,14 +215,14 @@ export default function Inventory() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
-                <th className="text-left p-4">Name</th>
-                <th className="text-left p-4">Category</th>
-                <th className="text-left p-4">In Stock</th>
-                <th className="text-left p-4">Total</th>
-                <th className="text-left p-4">Max Loan (hrs)</th>
-                <th className="text-left p-4">Max Qty/User</th>
-                <th className="text-left p-4">Model ID</th>
-                <th className="text-right p-4">Actions</th>
+                <th className="p-4 text-left">Name</th>
+                <th className="p-4 text-left">Category</th>
+                <th className="p-4 text-left">In Stock</th>
+                <th className="p-4 text-left">Total</th>
+                <th className="p-4 text-left">Max Loan (hrs)</th>
+                <th className="p-4 text-left">Max Qty/User</th>
+                <th className="p-4 text-left">Model ID</th>
+                <th className="p-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -235,15 +237,12 @@ export default function Inventory() {
                     <td className="p-4">{fmtOpt(m.max_loan_hours)}</td>
                     <td className="p-4">{fmtOpt(m.max_qty_per_user)}</td>
                     <td className="p-4 font-mono text-xs">{m.tool_model_id}</td>
-                    <td className="p-4 text-right space-x-2">
-                      <button
-                        className="rounded-lg border px-3 py-1 hover:bg-slate-50"
-                        onClick={() => setModal({ kind: "model_edit", m })}
-                      >
+                    <td className="space-x-2 p-4 text-right">
+                      <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setModal({ kind: "model_edit", m })}>
                         Edit
                       </button>
                       <button
-                        className="rounded-lg border px-3 py-1 hover:bg-rose-50 text-rose-700"
+                        className="rounded-lg border px-3 py-1 text-rose-700 hover:bg-rose-50"
                         onClick={async () => {
                           if (!confirm("Delete tool model?")) return;
                           await apiAdmin.deleteToolModel(m.tool_model_id);
@@ -268,12 +267,11 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* TOOL ITEMS */}
       <div className="rounded-2xl border bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
             <div className="font-semibold">Tool Items</div>
-            <div className="text-sm text-slate-600 mt-1">Physical assets (they exist even when checked out)</div>
+            <div className="mt-1 text-sm text-slate-600">Physical assets (they exist even when checked out)</div>
           </div>
           <div className="flex gap-2">
             <button className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50" onClick={load}>
@@ -288,7 +286,7 @@ export default function Inventory() {
           </div>
         </div>
 
-        <div className="mt-4 flex gap-3 items-center">
+        <div className="mt-4 flex items-center gap-3">
           <input
             value={qItems}
             onChange={(e) => setQItems(e.target.value)}
@@ -305,16 +303,16 @@ export default function Inventory() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
-                <th className="text-left p-4">Tool Item</th>
-                <th className="text-left p-4">Model</th>
-                <th className="text-left p-4">Cake/Slot</th>
-                <th className="text-left p-4">Tag</th>
-                <th className="text-left p-4">Condition</th>
-                <th className="text-left p-4">Active</th>
-                <th className="text-left p-4">Status</th>
-                <th className="text-left p-4">Holder</th>
-                <th className="text-left p-4">Due</th>
-                <th className="text-right p-4">Actions</th>
+                <th className="p-4 text-left">Tool Item</th>
+                <th className="p-4 text-left">Model</th>
+                <th className="p-4 text-left">Cake/Slot</th>
+                <th className="p-4 text-left">Tag</th>
+                <th className="p-4 text-left">Condition</th>
+                <th className="p-4 text-left">Active</th>
+                <th className="p-4 text-left">Status</th>
+                <th className="p-4 text-left">Holder</th>
+                <th className="p-4 text-left">Due</th>
+                <th className="p-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -348,7 +346,7 @@ export default function Inventory() {
                     </td>
                     <td className="p-4">{it.holder_name}</td>
                     <td className="p-4 font-mono text-xs">{it.due_at ? new Date(it.due_at).toLocaleString() : "—"}</td>
-                    <td className="p-4 text-right space-x-2">
+                    <td className="space-x-2 p-4 text-right">
                       <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setModal({ kind: "tag", it })}>
                         Assign Tag
                       </button>
@@ -359,14 +357,14 @@ export default function Inventory() {
                       {it.loan_status === "CHECKED_OUT" && isUnconfirmed ? (
                         <button
                           disabled={busyDrop}
-                          className="rounded-lg border px-3 py-1 hover:bg-rose-50 text-rose-700 disabled:opacity-40"
+                          className="rounded-lg border px-3 py-1 text-rose-700 hover:bg-rose-50 disabled:opacity-40"
                           onClick={() => dropUnconfirmed(it.tool_item_id)}
                         >
                           Drop Unconfirmed
                         </button>
                       ) : (
                         <button
-                          className="rounded-lg border px-3 py-1 hover:bg-rose-50 text-rose-700"
+                          className="rounded-lg border px-3 py-1 text-rose-700 hover:bg-rose-50"
                           onClick={async () => {
                             if (!confirm("Delete tool item?")) return;
                             await apiAdmin.deleteToolItem(it.tool_item_id);
@@ -392,7 +390,6 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* MODALS */}
       {modal?.kind === "model_create" ? (
         <ToolModelModal
           title="Create Tool Model"
@@ -445,7 +442,7 @@ export default function Inventory() {
         <ToolItemModal
           title="Create Tool Item"
           models={models}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           initial={{
             tool_model_id: models[0]?.tool_model_id ?? "",
             cake_id: "cake_1",
@@ -476,7 +473,7 @@ export default function Inventory() {
         <ToolItemModal
           title="Edit Tool Item"
           models={models}
-          readerId="kiosk_1_reader_1"
+          readerId="haven_1_reader_1"
           initial={{
             tool_model_id: modal.it.tool_model_id,
             cake_id: modal.it.cake_id,
@@ -504,7 +501,7 @@ export default function Inventory() {
       ) : null}
 
       {modal?.kind === "tag" ? (
-        <AssignToolTagModal toolItem={modal.it} readerId="kiosk_1_reader_1" onClose={() => setModal(null)} onDone={load} />
+        <AssignToolTagModal toolItem={modal.it} readerId="haven_1_reader_1" onClose={() => setModal(null)} onDone={load} />
       ) : null}
     </div>
   );
@@ -534,8 +531,8 @@ function ToolModelModal({
             ✕
           </button>
         </div>
-        <div className="px-6 py-5 space-y-3">
-          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+        <div className="space-y-3 px-6 py-5">
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-sm text-rose-700">{err}</div> : null}
 
           <Field label="Name">
             <input className="w-full rounded-xl border px-3 py-2" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
@@ -554,7 +551,7 @@ function ToolModelModal({
             />
           </Field>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <Field label="Max Loan Hours (optional)">
               <input
                 className="w-full rounded-xl border px-3 py-2"
@@ -663,8 +660,8 @@ function ToolItemModal({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-3">
-          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+        <div className="space-y-3 px-6 py-5">
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-sm text-rose-700">{err}</div> : null}
 
           <Field label="Tool Model">
             <select
@@ -680,12 +677,33 @@ function ToolItemModal({
             </select>
           </Field>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Cake ID">
-              <input className="w-full rounded-xl border px-3 py-2" value={v.cake_id} onChange={(e) => setV({ ...v, cake_id: e.target.value })} />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <Field label="Cake">
+              <select
+                className="w-full rounded-xl border px-3 py-2"
+                value={v.cake_id}
+                onChange={(e) => setV({ ...v, cake_id: e.target.value })}
+              >
+                {CAKE_OPTIONS.map((cake) => (
+                  <option key={cake} value={cake}>
+                    {cake}
+                  </option>
+                ))}
+              </select>
             </Field>
-            <Field label="Slot ID">
-              <input className="w-full rounded-xl border px-3 py-2" value={v.slot_id} onChange={(e) => setV({ ...v, slot_id: e.target.value })} />
+
+            <Field label="Slot">
+              <select
+                className="w-full rounded-xl border px-3 py-2"
+                value={v.slot_id}
+                onChange={(e) => setV({ ...v, slot_id: e.target.value })}
+              >
+                {SLOT_OPTIONS.map((slot) => (
+                  <option key={slot} value={slot}>
+                    slot {slot}
+                  </option>
+                ))}
+              </select>
             </Field>
           </div>
 
@@ -829,16 +847,16 @@ function AssignToolTagModal({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-3">
+        <div className="space-y-3 px-6 py-5">
           <div className="rounded-xl border bg-slate-50 p-4">
             <div className="font-semibold">Tool Item</div>
-            <div className="text-xs text-slate-500 font-mono">{toolItem.tool_item_id}</div>
+            <div className="font-mono text-xs text-slate-500">{toolItem.tool_item_id}</div>
             <div className="text-xs text-slate-500">
               current: <span className="font-mono">{toolItem.tool_tag_id ?? "—"}</span>
             </div>
           </div>
 
-          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+          {err ? <div className="rounded-xl border bg-rose-50 p-3 text-sm text-rose-700">{err}</div> : null}
 
           <div className="text-sm font-medium text-slate-700">Tool Tag ID</div>
           <input className="w-full rounded-xl border px-4 py-3 font-mono" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Tap or paste UID" />
@@ -847,7 +865,11 @@ function AssignToolTagModal({
             <button disabled={busy} className="rounded-xl border px-4 py-2 hover:bg-slate-50 disabled:opacity-40" onClick={waitForTap}>
               Wait for tap
             </button>
-            <button disabled={busy} className="ml-auto rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800 disabled:opacity-40" onClick={assign}>
+            <button
+              disabled={busy}
+              className="ml-auto rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800 disabled:opacity-40"
+              onClick={assign}
+            >
               Assign
             </button>
           </div>

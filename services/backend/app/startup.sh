@@ -1,0 +1,1 @@
+# logic, on startup, home if not, report cake states and compare, then run docker, check tailscale status, start chromium kiosk

@@ -1,0 +1,5 @@
+Subject: ShopAssistant message
+
+Hello,
+
+$message

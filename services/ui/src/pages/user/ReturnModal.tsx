@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HardwareSpinner } from "../../components/RotarySpinner";
 import { apiUser } from "../../lib/api.user";
-import type { ToolItem, ToolModel } from "../../lib/api.admin";
 
 type ReturnQueueItem = {
   loan_id: string;
@@ -9,9 +8,10 @@ type ReturnQueueItem = {
   tool_name: string;
   tool_category?: string;
   due_at: string;
+  expected_tool_tag?: string | null;
 };
 
-type Phase = "idle" | "verify_scan" | "returning" | "done" | "failed";
+type Phase = "idle" | "verify_scan" | "confirm_insert" | "returning" | "done" | "failed";
 
 function msg(e: any) {
   return e && typeof e === "object" && "message" in e ? String((e as any).message) : "request failed";
@@ -24,83 +24,77 @@ function sleep(ms: number) {
 export function ReturnModal({
   open,
   onClose,
-  userId,
   readerId,
   queue,
-  toolItemsById,
   onAllDone,
 }: {
   open: boolean;
   onClose: () => void;
   userId: string;
   readerId: string;
-
-  // items the user selected to return (names only, no IDs shown in UI except internal)
   queue: ReturnQueueItem[];
-
-  // used to get expected tool_tag_id (DB truth)
-  toolItemsById: Record<string, ToolItem>;
-
   onAllDone: () => Promise<void> | void;
 }) {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [idx, setIdx] = useState(0);
-
   const [scanInput, setScanInput] = useState("");
   const [scanAttempts, setScanAttempts] = useState(0);
-
-  const [adminManual, setAdminManual] = useState("");
-  const [showAdminBox, setShowAdminBox] = useState(false);
-
   const [err, setErr] = useState<string | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const [activeLoanId, setActiveLoanId] = useState<string | null>(null);
+  const [completedLoanIds, setCompletedLoanIds] = useState<string[]>([]);
 
   const pollRef = useRef<number | null>(null);
+  const confirmTimerRef = useRef<number | null>(null);
 
-  const current = useMemo(() => queue[idx] ?? null, [queue, idx]);
+  const remainingQueue = useMemo(
+    () => queue.filter((item) => !completedLoanIds.includes(item.loan_id)),
+    [queue, completedLoanIds]
+  );
 
-  const expectedTag = useMemo(() => {
-    if (!current) return null;
-    const it = toolItemsById[current.tool_item_id];
-    return it?.tool_tag_id ?? null;
-  }, [current, toolItemsById]);
+  const current = useMemo(() => {
+    if (activeLoanId) return queue.find((item) => item.loan_id === activeLoanId) ?? null;
+    return remainingQueue[0] ?? null;
+  }, [queue, remainingQueue, activeLoanId]);
 
   const stopPoll = () => {
     if (pollRef.current) window.clearInterval(pollRef.current);
     pollRef.current = null;
   };
 
+  const stopConfirmTimer = () => {
+    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = null;
+  };
+
+  const startPoll = (currentBatchId: string, loanId: string) => {
+    stopPoll();
+    pollRef.current = window.setInterval(() => {
+      poll(currentBatchId, loanId).catch((e) => setErr(msg(e)));
+    }, 800);
+  };
+
   useEffect(() => {
     if (!open) return;
 
     setPhase(queue.length ? "verify_scan" : "idle");
-    setIdx(0);
     setScanInput("");
     setScanAttempts(0);
-    setAdminManual("");
-    setShowAdminBox(false);
     setErr(null);
+    setBatchId(null);
+    setPendingRequestId(null);
+    setActiveLoanId(null);
+    setCompletedLoanIds([]);
 
-    return () => stopPoll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (!queue.length) return;
-
-    setPhase("verify_scan");
-    setScanInput("");
-    setScanAttempts(0);
-    setAdminManual("");
-    setShowAdminBox(false);
-    setErr(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx]);
+    return () => {
+      stopPoll();
+      stopConfirmTimer();
+    };
+  }, [open, queue.length]);
 
   const waitForToolScan = async () => {
     try {
       setErr(null);
-
       await apiUser.rfidSetMode({ reader_id: readerId, mode: "tool" });
 
       for (let i = 0; i < 30; i++) {
@@ -121,115 +115,175 @@ export function ReturnModal({
     }
   };
 
-  const verifyTagOrCountFail = async (entered: string) => {
+  const findMatchForTag = (entered: string): ReturnQueueItem | null => {
     const tag = entered.trim();
     if (!tag) {
       setErr("Tap the tool tag (or enter it).");
-      return false;
+      return null;
     }
 
-    if (!expectedTag) {
-      // This is a data/setup problem: admin didn’t assign tool_tag_id for this tool_item.
-      setErr("This tool is missing a tag in the system. Contact an admin.");
-      setShowAdminBox(true);
-      return false;
+    const exact = remainingQueue.find((item) => (item.expected_tool_tag ?? "").trim() === tag);
+    if (exact) {
+      setErr(null);
+      return exact;
     }
 
-    if (tag !== expectedTag) {
-      const next = scanAttempts + 1;
-      setScanAttempts(next);
-      setErr("Wrong tool scanned. Tap the correct tool.");
-
-      if (next >= 5) {
-        setErr("Scan failed 5 times. Contact an admin to manually enter the tool tag.");
-        setShowAdminBox(true);
-      }
-
-      return false;
+    setScanAttempts((n) => n + 1);
+    if (remainingQueue.some((item) => !item.expected_tool_tag)) {
+      setErr("This return queue is missing a tool tag in the system. Ask an admin to fix the inventory tag mapping.");
+    } else {
+      setErr("Wrong tool scanned. Scan one of the tools from this return group.");
     }
-
-    // correct tag
-    setErr(null);
-    return true;
+    return null;
   };
 
-  const doReturnCurrent = async () => {
-    if (!current) return;
-
+  const startReturnForItem = async (item: ReturnQueueItem) => {
+    setActiveLoanId(item.loan_id);
     setPhase("returning");
     setErr(null);
+    setPendingRequestId(null);
     stopPoll();
+    stopConfirmTimer();
 
     try {
-      const resp = await apiUser.doReturn({
-        user_id: userId,
-        items: [{ tool_item_id: current.tool_item_id }],
+      const resp: any = await apiUser.doReturn({
+        items: [{ tool_item_id: item.tool_item_id }],
       });
 
-      const poll = async () => {
-        const st = await apiUser.returnStatus(resp.batch_id);
-        const done = st.items.every((x: any) => x.hw_status === "return_ok" || x.hw_status === "failed");
+      const currentBatchId = String(resp.batch_id);
+      const requestId =
+        Array.isArray(resp?.request_ids) && resp.request_ids.length > 0
+          ? String(resp.request_ids[0])
+          : null;
 
-        if (!done) return;
+      setBatchId(currentBatchId);
 
-        stopPoll();
+      // CRITICAL FIX:
+      // We already know the request_id from the return batch response.
+      // Do not wait for status propagation just to know what to confirm.
+      if (requestId) {
+        setPendingRequestId(requestId);
+        console.log("[ReturnModal] latched request_id from batch response =", requestId);
+      }
 
-        const ok = st.items.some((x: any) => x.hw_status === "return_ok");
-        if (!ok) {
-          setErr("Return failed. Contact an admin.");
-          setPhase("failed");
-          setShowAdminBox(true);
-          return;
-        }
+      // Give the machine a short moment to move to the door, then show the button.
+      // This avoids the race where /status has not yet reflected waiting_user_insert.
+      confirmTimerRef.current = window.setTimeout(() => {
+        setPhase((prev) => {
+          if (prev === "returning") {
+            console.log("[ReturnModal] showing confirm_insert from local timer");
+            return "confirm_insert";
+          }
+          return prev;
+        });
+      }, 1200);
 
-        // next item
-        if (idx + 1 >= queue.length) {
-          setPhase("done");
-          await onAllDone();
-          return;
-        }
-
-        setIdx((i) => i + 1);
-      };
-
-      await poll();
-      pollRef.current = window.setInterval(() => poll().catch((e) => setErr(msg(e))), 800);
+      // Poll in background until we explicitly enter confirm_insert.
+      startPoll(currentBatchId, item.loan_id);
     } catch (e: any) {
       setErr(msg(e));
       setPhase("failed");
-      setShowAdminBox(true);
+    }
+  };
+
+  const poll = async (currentBatchId: string, loanId: string) => {
+    const st = await apiUser.returnStatus(currentBatchId);
+
+    const pending = st.items.find(
+      (x: any) => String(x.hw_status || x.stage || "") === "waiting_user_insert"
+    );
+
+    if (pending) {
+      const rid = String(pending.request_id);
+      setPendingRequestId(rid);
+      setPhase("confirm_insert");
+      stopPoll();
+      stopConfirmTimer();
+      console.log("[ReturnModal] latched pendingRequestId from status =", rid);
+      return;
+    }
+
+    const done = st.items.every((x: any) => x.hw_status === "return_ok" || x.hw_status === "failed");
+
+    if (!done) {
+      // Do not overwrite confirm_insert once we reached it.
+      setPhase((prev) => (prev === "confirm_insert" ? prev : "returning"));
+      return;
+    }
+
+    stopPoll();
+    stopConfirmTimer();
+    setPendingRequestId(null);
+
+    const ok = st.items.some((x: any) => x.hw_status === "return_ok");
+    if (!ok) {
+      setErr("Return failed. Contact an admin.");
+      setPhase("failed");
+      return;
+    }
+
+    const nextCompleted = Array.from(new Set([...completedLoanIds, loanId]));
+    setCompletedLoanIds(nextCompleted);
+    setActiveLoanId(null);
+    setScanInput("");
+
+    if (nextCompleted.length >= queue.length) {
+      setPhase("done");
+      await onAllDone();
+      return;
+    }
+
+    setPhase("verify_scan");
+  };
+
+  const confirmPendingStage = async () => {
+    console.log("[ReturnModal] confirm click pendingRequestId =", pendingRequestId);
+
+    if (!pendingRequestId) {
+      setErr("Return confirmation is not ready yet. Please wait a moment and try again.");
+      return;
+    }
+
+    try {
+      const requestId = pendingRequestId;
+      setErr(null);
+
+      // Pause any state fights while the confirm is sent.
+      stopPoll();
+      stopConfirmTimer();
+
+      await apiUser.returnConfirmRequest(requestId);
+
+      setPendingRequestId(null);
+      setPhase("returning");
+
+      if (batchId && activeLoanId) {
+        await poll(batchId, activeLoanId);
+        startPoll(batchId, activeLoanId);
+      }
+    } catch (e: any) {
+      setErr(msg(e));
+      setPhase("failed");
     }
   };
 
   const submitScan = async () => {
-    if (!current) return;
-
-    const ok = await verifyTagOrCountFail(scanInput);
-    if (!ok) return;
-
-    // tag verified
-    await doReturnCurrent();
-  };
-
-  const submitAdminManual = async () => {
-    if (!current) return;
-
-    const ok = await verifyTagOrCountFail(adminManual);
-    if (!ok) return;
-
-    await doReturnCurrent();
+    const item = findMatchForTag(scanInput);
+    if (!item) return;
+    await startReturnForItem(item);
   };
 
   const close = () => {
     stopPoll();
+    stopConfirmTimer();
     onClose();
   };
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-xl rounded-2xl bg-white shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="w-full max-w-2xl rounded-[30px] bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="text-lg font-semibold">Return Tools</div>
           <button className="rounded-lg px-3 py-1 text-slate-500 hover:bg-slate-100" onClick={close}>
@@ -243,27 +297,36 @@ export function ReturnModal({
           ) : (
             <>
               <div className="rounded-2xl border bg-slate-50 p-4">
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-4">
                   <div>
                     <div className="text-sm text-slate-600">Returning</div>
                     <div className="text-base font-semibold text-slate-900">
                       {current?.tool_name ?? "Tool"}
-                      {current?.tool_category ? <span className="text-slate-600 font-medium"> — {current.tool_category}</span> : null}
+                      {current?.tool_category ? (
+                        <span className="font-medium text-slate-600"> — {current.tool_category}</span>
+                      ) : null}
                     </div>
-                    <div className="text-xs text-slate-500 mt-1">Due: {current?.due_at ?? "—"}</div>
+                    <div className="mt-1 text-xs text-slate-500">Due: {current?.due_at ?? "—"}</div>
+                    {remainingQueue.length > 1 ? (
+                      <div className="mt-2 text-xs text-slate-500">
+                        This return group contains multiple checked-out items. Scan whichever one you are physically returning first.
+                      </div>
+                    ) : null}
                   </div>
                   <div className="text-xs text-slate-500">
-                    {idx + 1} / {queue.length}
+                    {completedLoanIds.length} returned / {queue.length}
                   </div>
                 </div>
               </div>
 
-              {err ? <div className="mt-4 rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+              {err ? (
+                <div className="mt-4 rounded-xl border bg-rose-50 p-3 text-sm text-rose-700">{err}</div>
+              ) : null}
 
               {phase === "verify_scan" ? (
                 <div className="mt-4 space-y-3">
                   <div className="rounded-xl border bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                    Tap the tool tag to verify you’re returning the correct tool.
+                    Tap the tool tag to verify the item you are returning. For identical tools, scan whichever one you are physically returning first.
                   </div>
 
                   <div className="text-sm font-medium text-slate-700">Tool Scan</div>
@@ -291,42 +354,22 @@ export function ReturnModal({
                     Attempts: <span className="font-mono">{scanAttempts}</span> / 5 — Reader:{" "}
                     <span className="font-mono">{readerId}</span>
                   </div>
+                </div>
+              ) : null}
 
-                  {!showAdminBox ? (
+              {phase === "confirm_insert" ? (
+                <div className="mt-4 space-y-3">
+                  <div className="rounded-xl border bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    The slice is at the door. Place the tool in the slice, then press the button below.
+                  </div>
+                  <div className="flex justify-end">
                     <button
-                      className="text-sm text-slate-600 underline underline-offset-4 hover:text-slate-900"
-                      onClick={() => setShowAdminBox(true)}
+                      className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800"
+                      onClick={confirmPendingStage}
                     >
-                      Contact admin / manual entry
+                      I Placed the Tool
                     </button>
-                  ) : null}
-
-                  {showAdminBox ? (
-                    <div className="mt-3 rounded-2xl border p-4">
-                      <div className="text-sm font-semibold text-slate-900">Admin manual entry</div>
-                      <div className="text-xs text-slate-600 mt-1">
-                        If RFID scan is failing, an admin can type the tool tag. It must match what’s in the system.
-                      </div>
-
-                      <div className="mt-3">
-                        <input
-                          className="w-full rounded-xl border px-4 py-3 font-mono"
-                          value={adminManual}
-                          onChange={(e) => setAdminManual(e.target.value)}
-                          placeholder="Admin: enter tool tag"
-                        />
-                      </div>
-
-                      <div className="mt-3 flex justify-end">
-                        <button
-                          className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                          onClick={submitAdminManual}
-                        >
-                          Admin Confirm & Return
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
+                  </div>
                 </div>
               ) : null}
 
@@ -334,7 +377,7 @@ export function ReturnModal({
                 <div className="mt-5">
                   <HardwareSpinner label="Returning..." />
                   <div className="mt-3 text-sm text-slate-600">
-                    Please place the tool in the return slot and follow the kiosk instructions.
+                    Waiting for the machine to move through the return cycle.
                   </div>
                 </div>
               ) : null}
@@ -342,7 +385,7 @@ export function ReturnModal({
               {phase === "failed" ? (
                 <div className="mt-5 space-y-3">
                   <div className="rounded-xl border bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    Return failed. Contact an admin.
+                    Return failed. Contact an admin if retry does not work.
                   </div>
                   <div className="flex justify-end gap-3">
                     <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={close}>
@@ -351,9 +394,13 @@ export function ReturnModal({
                     <button
                       className="rounded-xl bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800"
                       onClick={() => {
-                        // allow retry of scan/verify (not bypass)
+                        stopPoll();
+                        stopConfirmTimer();
                         setPhase("verify_scan");
                         setErr(null);
+                        setBatchId(null);
+                        setPendingRequestId(null);
+                        setActiveLoanId(null);
                       }}
                     >
                       Retry

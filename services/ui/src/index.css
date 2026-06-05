@@ -1,4 +1,60 @@
-
 @import "tailwindcss";
 
-:root { color-scheme: light; }
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #f8fafc;
+}
+
+html {
+  background: #f8fafc;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top, rgba(255, 61, 87, 0.10), transparent 22%),
+    radial-gradient(circle at bottom right, rgba(99, 102, 241, 0.10), transparent 20%),
+    linear-gradient(180deg, #fff8fb 0%, #f8fafc 35%, #eef2ff 100%);
+  color: #0f172a;
+}
+
+* { box-sizing: border-box; }
+
+::selection {
+  background: rgba(255, 35, 64, 0.18);
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+@keyframes brand-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-4px) scale(1.03); }
+}
+@keyframes loading-bar {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+@keyframes orbit-slow {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes logo-drift {
+  0%, 100% { transform: translateY(0px) rotate(-4deg) scale(1); }
+  35% { transform: translateY(-7px) rotate(3deg) scale(1.02); }
+  65% { transform: translateY(3px) rotate(-2deg) scale(0.99); }
+}
+@keyframes splash-rise {
+  0% { opacity: 0; transform: translateY(10px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-float { animation: float 3.2s ease-in-out infinite; }
+.animate-brand-bounce { animation: brand-bounce 1.6s ease-in-out infinite; }
+.animate-loading-bar { animation: loading-bar 1.8s ease-in-out infinite; }
+.animate-orbit-slow { animation: orbit-slow 12s linear infinite; }
+.animate-logo-drift { animation: logo-drift 3.6s ease-in-out infinite; }
+.animate-splash-rise { animation: splash-rise 700ms ease-out both; }

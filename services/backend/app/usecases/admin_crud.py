@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -26,6 +26,18 @@ def _conflict(msg: str):
 def _not_found(msg: str):
     raise HTTPException(status_code=404, detail=msg)
 
+
+def _json_safe(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
 def log_event(
     db: Session,
     event_type: str,
@@ -42,8 +54,66 @@ def log_event(
         actor_id=actor_id,
         request_id=request_id,
         tool_item_id=tool_item_id,
-        payload_json=json.dumps(payload or {}),
+        payload_json=json.dumps(_json_safe(payload or {})),
     ))
+
+
+
+SLOTS_PER_CAKE = 6
+HOME_SLOT = 0
+VALID_STORAGE_SLOTS = set(range(1, SLOTS_PER_CAKE))
+
+
+def _parse_slot_index(slot_id: str) -> int:
+    s = str(slot_id).strip().lower()
+    s = s.replace("slot_", "").replace("slot", "")
+    try:
+        idx = int(s)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid_slot_id")
+    idx %= SLOTS_PER_CAKE
+    return idx
+
+
+def _ensure_cake_state_row(db: Session, cake_id: str):
+    row = db.get(models.CakeState, cake_id)
+    if row is None:
+        row = models.CakeState(cake_id=cake_id, current_slot=0)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _ensure_cake_slot_row(db: Session, cake_id: str, slot_index: int):
+    row = db.get(models.CakeSlotState, {"cake_id": cake_id, "slot_index": slot_index})
+    if row is None:
+        row = models.CakeSlotState(cake_id=cake_id, slot_index=slot_index, tool_item_id=None)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _validate_storage_slot(slot_index: int):
+    if slot_index == HOME_SLOT:
+        raise HTTPException(status_code=400, detail="slot_0_reserved_for_home")
+    if slot_index not in VALID_STORAGE_SLOTS:
+        raise HTTPException(status_code=400, detail="invalid_storage_slot")
+
+
+def _clear_live_slot_for_tool(db: Session, tool_item_id: str):
+    rows = db.execute(
+        select(models.CakeSlotState).where(models.CakeSlotState.tool_item_id == tool_item_id)
+    ).scalars().all()
+    for row in rows:
+        row.tool_item_id = None
+
+
+def _occupy_live_slot(db: Session, cake_id: str, slot_index: int, tool_item_id: str):
+    _ensure_cake_state_row(db, cake_id)
+    row = _ensure_cake_slot_row(db, cake_id, slot_index)
+    if row.tool_item_id and row.tool_item_id != tool_item_id:
+        _conflict("cake_slot_already_occupied")
+    row.tool_item_id = tool_item_id
 
 # ---------------- USERS ----------------
 def list_users(db: Session, search: Optional[str], role: Optional[str], status: Optional[str], limit: int):
@@ -93,7 +163,7 @@ def get_user(db: Session, user_id: str):
 
 def patch_user(db: Session, user_id: str, body: AdminUserPatch):
     u = get_user(db, user_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
 
     if "card_id" in data and data["card_id"]:
         ex = db.execute(select(models.User).where(models.User.card_id == data["card_id"])).scalar_one_or_none()
@@ -151,7 +221,7 @@ def get_tool_model(db: Session, tool_model_id: str):
 
 def patch_tool_model(db: Session, tool_model_id: str, body: AdminToolModelPatch):
     tm = get_tool_model(db, tool_model_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
     for k, v in data.items():
         setattr(tm, k, v)
     log_event(db, "admin_tool_model_updated", payload={"tool_model_id": tool_model_id, "patch": data})
@@ -201,12 +271,22 @@ def create_tool_item(db: Session, body: AdminToolItemCreate):
     if not db.get(models.ToolModel, data["tool_model_id"]):
         raise HTTPException(status_code=400, detail="invalid_tool_model_id")
 
-    ex_tag = db.execute(select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])).scalar_one_or_none()
+    ex_tag = db.execute(
+        select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])
+    ).scalar_one_or_none()
     if ex_tag:
         _conflict("tool_tag_id_already_in_use")
 
+    cake_id = data["cake_id"]
+    slot_index = _parse_slot_index(data["slot_id"])
+    _validate_storage_slot(slot_index)
+
+    _ensure_cake_state_row(db, cake_id)
+    _occupy_live_slot(db, cake_id, slot_index, data["tool_item_id"])
+
     ti = models.ToolItem(**data, created_at=utcnow(), updated_at=utcnow())
     db.add(ti)
+
     log_event(db, "admin_tool_item_created", payload=data, tool_item_id=data["tool_item_id"])
     db.commit()
     db.refresh(ti)
@@ -220,22 +300,50 @@ def get_tool_item(db: Session, tool_item_id: str):
 
 def patch_tool_item(db: Session, tool_item_id: str, body: AdminToolItemPatch):
     ti = get_tool_item(db, tool_item_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
 
     if "tool_model_id" in data and data["tool_model_id"]:
         if not db.get(models.ToolModel, data["tool_model_id"]):
             raise HTTPException(status_code=400, detail="invalid_tool_model_id")
 
     if "tool_tag_id" in data and data["tool_tag_id"]:
-        ex_tag = db.execute(select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])).scalar_one_or_none()
+        ex_tag = db.execute(
+            select(models.ToolItem).where(models.ToolItem.tool_tag_id == data["tool_tag_id"])
+        ).scalar_one_or_none()
         if ex_tag and ex_tag.tool_item_id != tool_item_id:
             _conflict("tool_tag_id_already_in_use")
+
+    old_cake_id = ti.cake_id
+    old_slot_index = _parse_slot_index(ti.slot_id)
+    old_is_active = bool(ti.is_active)
+
+    new_cake_id = data.get("cake_id", ti.cake_id)
+    new_slot_id = data.get("slot_id", ti.slot_id)
+    new_slot_index = _parse_slot_index(new_slot_id)
+    new_is_active = bool(data.get("is_active", ti.is_active))
+
+    _validate_storage_slot(new_slot_index)
+
+    slot_changed = (old_cake_id != new_cake_id) or (old_slot_index != new_slot_index)
+    active_changed = (old_is_active != new_is_active)
+
+    if slot_changed or active_changed:
+        _clear_live_slot_for_tool(db, tool_item_id)
+
+        if new_is_active:
+            _ensure_cake_state_row(db, new_cake_id)
+            _occupy_live_slot(db, new_cake_id, new_slot_index, tool_item_id)
 
     for k, v in data.items():
         setattr(ti, k, v)
     ti.updated_at = utcnow()
 
-    log_event(db, "admin_tool_item_updated", payload={"tool_item_id": tool_item_id, "patch": data}, tool_item_id=tool_item_id)
+    log_event(
+        db,
+        "admin_tool_item_updated",
+        payload={"tool_item_id": tool_item_id, "patch": data},
+        tool_item_id=tool_item_id,
+    )
     db.commit()
     db.refresh(ti)
     return ti
@@ -244,10 +352,15 @@ def delete_tool_item(db: Session, tool_item_id: str):
     ti = get_tool_item(db, tool_item_id)
 
     active_loan = db.execute(
-        select(models.Loan).where(models.Loan.tool_item_id == tool_item_id, models.Loan.returned_at.is_(None)).limit(1)
+        select(models.Loan).where(
+            models.Loan.tool_item_id == tool_item_id,
+            models.Loan.returned_at.is_(None)
+        ).limit(1)
     ).scalar_one_or_none()
     if active_loan:
         _conflict("tool_item_is_on_active_loan")
+
+    _clear_live_slot_for_tool(db, tool_item_id)
 
     db.delete(ti)
     log_event(db, "admin_tool_item_deleted", payload={"tool_item_id": tool_item_id}, tool_item_id=tool_item_id)
@@ -307,9 +420,16 @@ def get_loan(db: Session, loan_id: str):
 
 def patch_loan(db: Session, loan_id: str, body: AdminLoanPatch):
     loan = get_loan(db, loan_id)
-    data = body.model_dump(exclude_unset=True)
+    data = body.model_dump(mode="python", exclude_unset=True)
     for k, v in data.items():
         setattr(loan, k, v)
+
+    if getattr(loan, "due_at", None) is not None and getattr(loan, "returned_at", None) is None:
+        now_dt = utcnow()
+        if loan.due_at < now_dt:
+            loan.status = "overdue"
+        elif loan.status == "overdue":
+            loan.status = "active"
 
     log_event(db, "admin_loan_updated", payload={"loan_id": loan_id, "patch": data}, tool_item_id=loan.tool_item_id)
     db.commit()

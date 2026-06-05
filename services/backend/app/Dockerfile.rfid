@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    libc6-dev \
+    linux-libc-dev \
+    python3-rpi.gpio \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir paho-mqtt spidev mfrc522
+
+COPY rfid_service.py ./rfid_service.py
+
+CMD ["python", "rfid_service.py"]

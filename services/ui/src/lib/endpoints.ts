@@ -1,44 +1,67 @@
 export const EP = {
-  // --- RFID / auth ---
-  rfidSetMode: "/rfid/set-mode",
+  rfidSetMode: "/api/rfid/set-mode",
   rfidConsume: (readerId: string, kind: "card" | "tool") =>
-    `/rfid/consume?reader_id=${encodeURIComponent(readerId)}&kind=${kind}`,
-  authCard: "/auth/card",
+    `/api/rfid/consume?reader_id=${encodeURIComponent(readerId)}&kind=${kind}`,
 
-  // --- user workflow ---
-  dispense: "/dispense",
-  dispenseStatus: (batchId: string) => `/dispense/${encodeURIComponent(batchId)}/status`,
-  // IMPORTANT: you DO NOT have /dispense/confirm. You DO have /rfid/tool-confirm.
-  dispenseConfirm: "/rfid/tool-confirm",
+  authCard: "/api/auth/card",
+  authSessionCard: "/api/auth/session/card",
+  authSessionMe: "/api/auth/session/me",
+  authSessionLogout: "/api/auth/session/logout",
 
-  loans: (userId: string) => `/loans?user_id=${encodeURIComponent(userId)}`,
-  doReturn: "/return",
-  returnStatus: (batchId: string) => `/return/${encodeURIComponent(batchId)}/status`,
+  catalog: "/api/catalog",
 
-  // --- admin base ---
-  adminUsers: "/admin/users",
-  adminUser: (userId: string) => `/admin/users/${encodeURIComponent(userId)}`,
-  adminAssignUserCard: (userId: string) => `/admin/users/${encodeURIComponent(userId)}/card`,
+  dispense: "/api/dispense",
+  dispenseStatus: (batchId: string) => `/api/dispense/${encodeURIComponent(batchId)}/status`,
+  dispenseRequestConfirm: (requestId: string) => `/api/dispense/requests/${encodeURIComponent(requestId)}/confirm`,
+  dispenseRequestCancel: (requestId: string) => `/api/dispense/requests/${encodeURIComponent(requestId)}/cancel`,
 
-  adminToolModels: "/admin/tool-models",
-  adminToolModel: (id: string) => `/admin/tool-models/${encodeURIComponent(id)}`,
+  loans: "/api/loans",
+  doReturn: "/api/return",
+  returnStatus: (batchId: string) => `/api/return/${encodeURIComponent(batchId)}/status`,
+  returnRequestConfirm: (requestId: string) => `/api/return/requests/${encodeURIComponent(requestId)}/confirm`,
+  returnRequestCancel: (requestId: string) => `/api/return/requests/${encodeURIComponent(requestId)}/cancel`,
 
-  adminToolItems: "/admin/tool-items",
-  adminToolItem: (id: string) => `/admin/tool-items/${encodeURIComponent(id)}`,
-
-  // NOTE: your route is /admin/tools/items/{tool_item_id}/tag
-  adminAssignToolTag: (toolItemId: string) => `/admin/tools/items/${encodeURIComponent(toolItemId)}/tag`,
-
-  adminLoans: "/admin/loans",
-  adminLoan: (loanId: string) => `/admin/loans/${encodeURIComponent(loanId)}`,
-
-  adminEvents: "/admin/events",
-  adminEvent: (eventId: number) => `/admin/events/${eventId}`,
-
-  adminUsage: "/admin/metrics/usage",
-  adminInventory: "/admin/inventory",
-
-  adminMotorTestStart: "/admin/test/motor",
-  adminMotorTestStatus: (requestId: string) =>
-    `/admin/test/motor/${encodeURIComponent(requestId)}/status`,
+  adminUsers: "/api/admin/users",
+  adminUser: (userId: string) => `/api/admin/users/${encodeURIComponent(userId)}`,
+  adminAssignUserCard: (userId: string) => `/api/admin/users/${encodeURIComponent(userId)}/card`,
+  adminToolModels: "/api/admin/tool-models",
+  adminToolModel: (id: string) => `/api/admin/tool-models/${encodeURIComponent(id)}`,
+  adminToolItems: "/api/admin/tool-items",
+  adminToolItem: (id: string) => `/api/admin/tool-items/${encodeURIComponent(id)}`,
+  adminAssignToolTag: (toolItemId: string) => `/api/admin/tools/items/${encodeURIComponent(toolItemId)}/tag`,
+  adminLoans: "/api/admin/loans",
+  adminLoan: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}`,
+  adminLoanExtend: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}/extend`,
+  adminLoanSendOverdueEmail: (loanId: string) => `/api/admin/loans/${encodeURIComponent(loanId)}/send-overdue-email`,
+  adminEvents: "/api/admin/events",
+  adminUsage: "/api/admin/metrics/usage",
+  adminInventory: "/api/admin/inventory",
+  adminMotorTestStart: "/api/admin/test/motor",
+  adminMotorTestStatus: (requestId: string) => `/api/admin/test/motor/${encodeURIComponent(requestId)}/status`,
+  adminManualStatus: "/api/admin/manual/status",
+  adminManualHomeAll: "/api/admin/manual/home-all",
+  adminManualGoToDoor: "/api/admin/manual/go-to-door",
+  adminManualStop: "/api/admin/manual/stop",
+  adminManualJogAxis: "/api/admin/manual/jog-axis",
+  adminManualMoveCake: "/api/admin/manual/move-cake",
+  adminManualRunMacro: "/api/admin/manual/run-macro",
+  adminManualJogCakeDelta: "/api/admin/manual/jog-cake-delta",
+  adminMachineStatus: "/api/admin/machine/status",
+  adminMachineQueryStatus: "/api/admin/machine/query-status",
+  adminMachineRestartKlipper: "/api/admin/machine/restart-klipper",
+  adminMachineFirmwareRestart: "/api/admin/machine/firmware-restart",
+  adminMachineEmergencyStop: "/api/admin/machine/emergency-stop",
+  adminMachineAlerts: "/api/admin/machine/alerts",
+  adminHardwareWaits: "/api/admin/machine/waits",
+  adminCalibrationStatus: "/api/admin/calibration/status",
+  adminCalibrationSet: "/api/admin/calibration/set",
+  adminCakes: "/api/admin/cakes",
+  adminEmailsTemplates: "/api/admin/emails/templates",
+  adminEmailsSend: "/api/admin/emails/send",
+  adminEmailsSendTemplate: "/api/admin/emails/send-template",
+  adminCronJobs: "/api/admin/cron/jobs",
+  adminCronRunHealthcheck: "/api/admin/cron/run-healthcheck",
+  adminCronRunEmailTest: "/api/admin/cron/run-email-test",
+  adminCronAlertRecipients: "/api/admin/cron/alert-recipients",
+  adminLoanConfirm: (loanId: string) => `/api/admin/loans/${loanId}/confirm`,
 };

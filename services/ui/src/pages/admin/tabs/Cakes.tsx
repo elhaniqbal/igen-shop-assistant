@@ -1,19 +1,11 @@
-import { useMemo, useRef, useState } from "react";
-import { apiAdmin, type ReadEepromResp, type CakeHomeStatusResp } from "../../../lib/api.admin";
-
-type EepromModalState =
-  | null
-  | {
-      cakeId: number;
-      resp: ReadEepromResp | null;
-    };
-
-type HomeUiState = {
-  request_id: string;
-  stage: CakeHomeStatusResp["stage"];
-  error_code?: string | null;
-  error_reason?: string | null;
-};
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  apiAdmin,
+  type CakeHomeStatusResp,
+  type CakeOverview,
+  type ReadAngleResp,
+  type ReadEepromResp,
+} from "../../../lib/api.admin";
 
 function prettyJson(v: any) {
   try {
@@ -23,52 +15,20 @@ function prettyJson(v: any) {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function stageLabel(s: CakeHomeStatusResp["stage"]) {
-  switch (s) {
-    case "queued":
-      return "Queued";
-    case "accepted":
-      return "Accepted";
-    case "in_progress":
-      return "In progress";
-    case "succeeded":
-      return "Done";
-    case "failed":
-      return "Failed";
-    default:
-      return s;
-  }
-}
-
-function stagePillClass(s: CakeHomeStatusResp["stage"]) {
-  switch (s) {
-    case "succeeded":
-      return "bg-emerald-50 text-emerald-800 border-emerald-200";
-    case "failed":
-      return "bg-rose-50 text-rose-700 border-rose-200";
-    case "queued":
-    case "accepted":
-    case "in_progress":
-    default:
-      return "bg-slate-50 text-slate-700 border-slate-200";
-  }
-}
+const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
 
 export default function Cakes() {
-  const cakes = useMemo(() => Array.from({ length: 9 }, (_, i) => i + 2), []);
-  const [busyCake, setBusyCake] = useState<number | null>(null); // EEPROM busy
-  const [homeBusyCake, setHomeBusyCake] = useState<number | null>(null); // Set Home busy (per-cake)
+  const [cakes, setCakes] = useState<CakeOverview[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [eepromModal, setEepromModal] = useState<EepromModalState>(null);
 
-  // per-cake Set Home status
-  const [homeByCake, setHomeByCake] = useState<Record<number, HomeUiState | null>>({});
+  const [busyCake, setBusyCake] = useState<number | null>(null);
+  const [angleBusyCake, setAngleBusyCake] = useState<number | null>(null);
+  const [homeBusyCake, setHomeBusyCake] = useState<number | null>(null);
 
-  // polling timers per cake
+  const [eepromModal, setEepromModal] = useState<{ cakeId: number; resp: ReadEepromResp | null } | null>(null);
+  const [angleModal, setAngleModal] = useState<{ cakeId: number; resp: ReadAngleResp | null } | null>(null);
+
+  const [homeByCake, setHomeByCake] = useState<Record<number, CakeHomeStatusResp | null>>({});
   const pollRefByCake = useRef<Record<number, number | null>>({});
 
   const stopPoll = (cakeId: number) => {
@@ -77,21 +37,76 @@ export default function Cakes() {
     pollRefByCake.current[cakeId] = null;
   };
 
+  const load = async () => {
+    try {
+      setErr(null);
+      setCakes(await apiAdmin.cakesOverview());
+    } catch (e: any) {
+      setErr(e?.message || "Could not load cakes");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    return () => {
+      Object.keys(pollRefByCake.current).forEach((k) => {
+        const id = Number(k);
+        if (!Number.isNaN(id)) stopPoll(id);
+      });
+    };
+  }, []);
+
   const readEeprom = async (cakeId: number) => {
     try {
       setErr(null);
       setBusyCake(cakeId);
-
-      // open modal immediately (responsive)
       setEepromModal({ cakeId, resp: null });
 
-      const resp = await apiAdmin.readCakeEeprom(cakeId);
-      setEepromModal({ cakeId, resp });
+      await apiAdmin.queueCakeReadEeprom(cakeId);
+
+      let last: ReadEepromResp | null = null;
+      for (let i = 0; i < 6; i++) {
+        await sleep(i === 0 ? 250 : 500);
+        const resp = await apiAdmin.readCakeEeprom(cakeId);
+        last = resp;
+        if (resp?.eeprom) {
+          setEepromModal({ cakeId, resp });
+          return;
+        }
+      }
+
+      setEepromModal({ cakeId, resp: last });
     } catch (e: any) {
-      setErr(e?.message ?? "read eeprom failed");
-      setEepromModal({ cakeId, resp: { ok: false, cake_id: cakeId, eeprom: null, headers: {} } });
+      setErr(e?.message || "Read EEPROM failed");
     } finally {
       setBusyCake(null);
+    }
+  };
+
+  const readAngle = async (cakeId: number) => {
+    try {
+      setErr(null);
+      setAngleBusyCake(cakeId);
+      setAngleModal({ cakeId, resp: null });
+
+      await apiAdmin.queueCakeReadAngle(cakeId);
+
+      let last: ReadAngleResp | null = null;
+      for (let i = 0; i < 6; i++) {
+        await sleep(i === 0 ? 250 : 500);
+        const resp = await apiAdmin.readCakeAngle(cakeId);
+        last = resp;
+        if (resp?.reading) {
+          setAngleModal({ cakeId, resp });
+          return;
+        }
+      }
+
+      setAngleModal({ cakeId, resp: last });
+    } catch (e: any) {
+      setErr(e?.message || "Read angle failed");
+    } finally {
+      setAngleBusyCake(null);
     }
   };
 
@@ -101,222 +116,168 @@ export default function Cakes() {
       setHomeBusyCake(cakeId);
       stopPoll(cakeId);
 
-      // optimistic UI
-      setHomeByCake((prev) => ({
-        ...prev,
-        [cakeId]: { request_id: "starting...", stage: "queued" },
-      }));
-
       const start = await apiAdmin.cakeSetHome(cakeId);
 
-      setHomeByCake((prev) => ({
-        ...prev,
-        [cakeId]: { request_id: start.request_id, stage: "queued" },
-      }));
-
-      const pollOnce = async () => {
+      const poll = async () => {
         const st = await apiAdmin.cakeSetHomeStatus(start.request_id);
-
-        setHomeByCake((prev) => ({
-          ...prev,
-          [cakeId]: {
-            request_id: st.request_id,
-            stage: st.stage,
-            error_code: st.error_code ?? null,
-            error_reason: st.error_reason ?? null,
-          },
-        }));
-
+        setHomeByCake((prev) => ({ ...prev, [cakeId]: st }));
         if (st.stage === "succeeded" || st.stage === "failed") {
           stopPoll(cakeId);
-          setHomeBusyCake((cur) => (cur === cakeId ? null : cur));
+          setHomeBusyCake(null);
+          await load();
         }
       };
 
-      // immediate poll, then interval
-      await pollOnce();
+      await poll();
       pollRefByCake.current[cakeId] = window.setInterval(() => {
-        pollOnce().catch((e: any) => {
-          setErr(e?.message ?? "set home status poll failed");
-          stopPoll(cakeId);
-          setHomeBusyCake((cur) => (cur === cakeId ? null : cur));
-          setHomeByCake((prev) => ({
-            ...prev,
-            [cakeId]: prev[cakeId]
-              ? {
-                  ...prev[cakeId]!,
-                  stage: "failed",
-                  error_code: "POLL_FAILED",
-                  error_reason: e?.message ?? "poll failed",
-                }
-              : {
-                  request_id: "unknown",
-                  stage: "failed",
-                  error_code: "POLL_FAILED",
-                  error_reason: e?.message ?? "poll failed",
-                },
-          }));
-        });
-      }, 800);
+        poll().catch((e: any) => setErr(e?.message || "Home poll failed"));
+      }, 750);
     } catch (e: any) {
-      setErr(e?.message ?? "set home failed");
-      setHomeBusyCake((cur) => (cur === cakeId ? null : cur));
-      setHomeByCake((prev) => ({
-        ...prev,
-        [cakeId]: {
-          request_id: prev[cakeId]?.request_id ?? "unknown",
-          stage: "failed",
-          error_code: "START_FAILED",
-          error_reason: e?.message ?? "set home failed",
-        },
-      }));
+      setErr(e?.message || "Set home failed");
+      setHomeBusyCake(null);
     }
   };
 
-  return (
-    <div className="space-y-6">
-      {err ? <div className="rounded-xl border bg-rose-50 p-3 text-rose-700 text-sm">{err}</div> : null}
+  const filledCounts = useMemo(
+    () => Object.fromEntries(cakes.map((c) => [c.cake_id, c.slots.filter((s) => !!s.tool_item_id).length])),
+    [cakes]
+  );
 
-      <div className="rounded-2xl border bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between">
+  return (
+    <div className="space-y-5">
+      <div className="rounded-[28px] border border-white/80 bg-white/85 p-5 shadow-[0_14px_50px_rgba(15,23,42,0.08)] backdrop-blur">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-lg font-semibold">Cakes</div>
-            <div className="text-sm text-slate-600 mt-1">
-              Admin controls for cake controllers (2–10). EEPROM popup is wired.{" "}
-              <span className="font-semibold">Set Home</span> sends serial <span className="font-mono">ZERO</span> via MQTT bridge.
+            <div className="text-lg font-bold text-slate-900">Cakes & slot state</div>
+            <div className="mt-1 text-sm text-slate-600">
+              This view bridges encoder tooling and the backend slot allocator. The user flow depends on these current-slot values.
             </div>
           </div>
-        </div>
-
-        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          {cakes.map((cakeId) => {
-            const hs = homeByCake[cakeId] ?? null;
-            const homeDisabled = homeBusyCake === cakeId;
-
-            return (
-              <div key={cakeId} className="rounded-2xl border p-4">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold flex items-center gap-2">
-                    Cake {cakeId}
-                    {hs ? (
-                      <span className={["text-xs px-2 py-0.5 rounded-full border", stagePillClass(hs.stage)].join(" ")}>
-                        {stageLabel(hs.stage)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <span className="text-xs text-slate-500">ESP32</span>
-                </div>
-
-                {hs?.stage === "failed" ? (
-                  <div className="mt-2 text-xs text-rose-700">
-                    {hs.error_code ? <span className="font-mono">{hs.error_code}</span> : "FAILED"}
-                    {hs.error_reason ? ` — ${hs.error_reason}` : ""}
-                  </div>
-                ) : null}
-
-                {hs?.request_id && hs.request_id !== "starting..." ? (
-                  <div className="mt-2 text-[11px] text-slate-500">
-                    req: <span className="font-mono">{hs.request_id}</span>
-                  </div>
-                ) : null}
-
-                <div className="mt-3 grid grid-cols-1 gap-2">
-                  <button
-                    disabled={busyCake === cakeId}
-                    className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-40"
-                    onClick={() => readEeprom(cakeId)}
-                  >
-                    Read EEPROM
-                  </button>
-
-                  <button
-                    disabled={homeDisabled}
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
-                    onClick={() => setHome(cakeId)}
-                    title="Sets cake home (serial ZERO)"
-                  >
-                    {homeDisabled ? "Setting Home..." : "Set Home"}
-                  </button>
-
-                  <button
-                    disabled
-                    className="rounded-xl border px-4 py-2 text-sm text-slate-400 cursor-not-allowed"
-                    title="Implement later"
-                  >
-                    Burn EEPROM (later)
-                  </button>
-                </div>
-
-                <div className="mt-3 text-xs text-slate-500">
-                  Set Home publishes <span className="font-mono">igen/cmd/cake/home</span> and listens for{" "}
-                  <span className="font-mono">igen/evt/cake/home</span>.
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {eepromModal ? <EepromModal cakeId={eepromModal.cakeId} resp={eepromModal.resp} onClose={() => setEepromModal(null)} /> : null}
-    </div>
-  );
-}
-
-function EepromModal({
-  cakeId,
-  resp,
-  onClose,
-}: {
-  cakeId: number;
-  resp: ReadEepromResp | null;
-  onClose: () => void;
-}) {
-  const headers = resp?.headers ?? {};
-  const headerLines = Object.keys(headers).length
-    ? Object.entries(headers)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\n")
-    : "";
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <div className="text-lg font-semibold">EEPROM — Cake {cakeId}</div>
-          <button className="rounded-lg px-3 py-1 text-slate-500 hover:bg-slate-100" onClick={onClose}>
-            ✕
+          <button
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            onClick={load}
+          >
+            Refresh
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-4">
-          {!resp ? (
-            <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">Reading EEPROM…</div>
-          ) : (
-            <>
-              <div className="rounded-xl border bg-slate-50 p-4">
-                <div className="text-sm font-semibold text-slate-900">Headers (future EEPROM source)</div>
-                <div className="mt-2 font-mono text-xs whitespace-pre-wrap">
-                  {headerLines || "No EEPROM headers yet (backend will populate later)."}
+        {err ? (
+          <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+            {err}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {cakes.map((cake) => {
+          const cakeId =
+            Number(String(cake.cake_id).replace(/\D/g, "")) || Number(cake.cake_id);
+          const home = homeByCake[cakeId];
+
+          return (
+            <div
+              key={cake.cake_id}
+              className="rounded-[28px] border border-white/80 bg-white/85 p-5 shadow-[0_14px_50px_rgba(15,23,42,0.08)] backdrop-blur"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xl font-bold text-slate-900">{cake.cake_id}</div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Current slot: <span className="font-semibold text-slate-900">{cake.current_slot}</span>
+                  </div>
+                </div>
+                <div className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">
+                  {filledCounts[cake.cake_id] || 0} / {cake.slots.length} filled
                 </div>
               </div>
 
-              <div className="rounded-xl border bg-slate-50 p-4">
-                <div className="text-sm font-semibold text-slate-900">Body (optional)</div>
-                <div className="mt-2 font-mono text-xs whitespace-pre-wrap">
-                  {resp.eeprom ? prettyJson(resp.eeprom) : "No EEPROM body yet (optional)."}
-                </div>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                {cake.slots.map((slot) => (
+                  <div
+                    key={slot.slot_index}
+                    className={`rounded-2xl border p-3 text-center ${
+                      slot.tool_item_id ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"
+                    }`}
+                  >
+                    <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Slot</div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">{slot.slot_index}</div>
+                    <div className="mt-2 truncate text-[11px] text-slate-600">{slot.tool_item_id || "Open"}</div>
+                  </div>
+                ))}
               </div>
-            </>
-          )}
 
-          <div className="flex justify-end">
-            <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={onClose}>
-              Close
-            </button>
+              {home ? (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                  Home request: <span className="font-semibold">{home.stage}</span>
+                  {home.error_reason ? ` — ${home.error_reason}` : ""}
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  disabled={busyCake === cakeId}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  onClick={() => readEeprom(cakeId)}
+                >
+                  {busyCake === cakeId ? "Reading EEPROM…" : "Read EEPROM"}
+                </button>
+
+                <button
+                  disabled={angleBusyCake === cakeId}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  onClick={() => readAngle(cakeId)}
+                >
+                  {angleBusyCake === cakeId ? "Reading Angle…" : "Read Angle"}
+                </button>
+
+                <button
+                  disabled={homeBusyCake === cakeId}
+                  className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
+                  onClick={() => setHome(cakeId)}
+                >
+                  {homeBusyCake === cakeId ? "Setting Home…" : "Set Home"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {eepromModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <div className="w-full max-w-2xl rounded-[28px] bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="text-xl font-bold">EEPROM — Cake {eepromModal.cakeId}</div>
+              <button onClick={() => setEepromModal(null)} className="rounded-xl border px-3 py-1.5">
+                Close
+              </button>
+            </div>
+            <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+              <pre className="whitespace-pre-wrap text-xs text-slate-700">
+                {eepromModal.resp ? prettyJson(eepromModal.resp.eeprom ?? {}) : "Reading…"}
+              </pre>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
+
+      {angleModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <div className="w-full max-w-2xl rounded-[28px] bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="text-xl font-bold">Live Angle — Cake {angleModal.cakeId}</div>
+              <button onClick={() => setAngleModal(null)} className="rounded-xl border px-3 py-1.5">
+                Close
+              </button>
+            </div>
+            <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+              <pre className="whitespace-pre-wrap text-xs text-slate-700">
+                {angleModal.resp ? prettyJson(angleModal.resp.reading ?? {}) : "Reading…"}
+              </pre>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

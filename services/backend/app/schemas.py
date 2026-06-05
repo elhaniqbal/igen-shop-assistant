@@ -56,7 +56,7 @@ class RfidCardScan(BaseModel):
 # ---------------- USERS ----------------
 
 UserRole = Literal["student", "staff", "admin"]
-UserStatus = Literal["active", "good", "delinquent", "banned"]
+UserStatus = Literal["active", "good", "delinquent", "banned", "disabled"]
 
 
 class AdminUserCreate(BaseModel):
@@ -225,6 +225,68 @@ class AdminMotorTestStatus(BaseModel):
     error_reason: Optional[str] = None
 
 
+# ---------------- ADMIN MANUAL / MACHINE ----------------
+
+AxisName = Literal["horizontal", "vertical"]
+AxisDirection = Literal["positive", "negative"]
+CakeDirection = Literal["cw", "ccw"]
+
+
+class ManualJogAxisReq(BaseModel):
+    axis: AxisName
+    direction: AxisDirection
+    step: float = Field(gt=0)
+
+
+class ManualMoveCakeReq(BaseModel):
+    cake_id: int = Field(ge=1, le=32)
+    step: int = Field(ge=1, le=100)
+    direction: CakeDirection = "cw"
+
+
+class ManualCommandResp(BaseModel):
+    ok: bool = True
+    message: str
+    request_id: Optional[str] = None
+    command: Optional[str] = None
+    data: Optional[dict] = None
+
+
+class ManualControlStatus(BaseModel):
+    ok: bool = True
+    reachable: bool = False
+    state: str = "unknown"
+    busy: bool = False
+    homed: bool = False
+    horizontal_position: Optional[float] = None
+    vertical_position: Optional[float] = None
+    active_cake_id: Optional[int] = None
+    position: list = Field(default_factory=list)
+    error: Optional[str] = None
+    source: Optional[str] = None
+
+
+class MachineAlertOut(BaseModel):
+    event_id: int
+    ts: datetime
+    severity: str
+    style: Optional[str] = None
+    code: Optional[str] = None
+    message: str
+    related_request_id: Optional[str] = None
+    data: dict = Field(default_factory=dict)
+    sticky: bool = False
+    ack_required: bool = False
+    source: Optional[str] = None
+
+
+class AdminCalibrationSetReq(BaseModel):
+    action: Optional[str] = "set_variable"
+    variable: Optional[str] = None
+    value: float
+    cake_id: Optional[int] = None
+
+
 # ---------------- EVENTS ----------------
 
 class EventOut(BaseModel):
@@ -240,7 +302,6 @@ class EventOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ---------------- USER FLOW (dispense/return) ----------------
 
 # Shopping-cart dispense item: backend allocates tool_item_id + slot_id
@@ -250,7 +311,6 @@ class DispenseItem(BaseModel):
 
 
 class DispenseBatchRequest(BaseModel):
-    user_id: str
     items: List[DispenseItem]
     loan_period_hours: int = Field(default=24, ge=1, le=24 * 30)
 
@@ -261,7 +321,6 @@ class DispenseBatchResponse(BaseModel):
 
 
 class ToolConfirmRequest(BaseModel):
-    user_id: str
     tool_tag_id: str
     reader_id: Optional[str] = None
 
@@ -272,10 +331,17 @@ class ReturnItem(BaseModel):
 
 
 class ReturnBatchRequest(BaseModel):
-    user_id: str
     items: List[ReturnItem]
 
 
 class ReturnBatchResponse(BaseModel):
     batch_id: str
     request_ids: List[str]
+
+class ManualJogCakeDeltaReq(BaseModel):
+    cake_id: int = Field(ge=1, le=32)
+    delta: int = Field(ge=-360, le=360)
+
+
+class ManualRunMacroReq(BaseModel):
+    script: str = Field(min_length=1, max_length=500)

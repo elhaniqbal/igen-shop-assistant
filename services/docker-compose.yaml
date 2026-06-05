@@ -1,3 +1,4 @@
+
 services:
   # ---- Combined Frontend + Nginx ----
   frontend:
@@ -16,6 +17,8 @@ services:
     networks:
       - internal
       - public
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # ---- Backend (FastAPI) ----
   backend:
@@ -32,13 +35,20 @@ services:
       - MQTT_BROKER=mqtt # if inside docker mqtt, localhost otherwise
       - MQTT_PORT=1883
       - PYTHONUNBUFFERED=1
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+      - KLIPPER_CONFIG_DIR=/klipper-config
+      - KLIPPER_VARS_FILE=/klipper-config/vars.cfg
+      - KLIPPER_STEPPERS_FILE=/klipper-config/steppers.cfg
     volumes:
-      - ./data:/app/data       # ✅ Persistent SQLite storage
+      - ./data:/app/data       # Persistent SQLite storage
+      - /home/raspberrypimac/printer_data/config:/klipper-config
     healthcheck:
       disable: true # remove for PROD
     depends_on:
-      sqlite-web2:
-        condition: service_started
+  #    sqlite-web2:
+   #     condition: service_started
       mqtt:
         condition: service_started
       mqttx:
@@ -49,21 +59,22 @@ services:
     networks:
       - internal
 
-  sqlite-web2:
-    build:
-      context: ./db
-      dockerfile: Dockerfile.sqlite-web
-    restart: unless-stopped
-    ports:
-      - "8083:8080"
-    environment:
-      - SQLITE_DATABASE=${SQLITE_PATH}
-    volumes:
-      - ./data:/data
-    networks:
-      - internal
-      - public
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
+
+  adminer:
+     image: arm64v8/adminer
+     restart: unless-stopped
+     ports:
+       - "8083:8080"
+     volumes:
+       - ./data:/data
+     environment:
+       - ADMINER_DEFAULT_SERVER=sqlite
+     networks:
+       - internal
+       - public
   # ---- Mosquitto MQTT Broker ----
   mqtt:
     image: eclipse-mosquitto:2
@@ -104,8 +115,8 @@ services:
       - BRIDGE_MODE=MOONRAKER
       - MOONRAKER_URL=http://host.docker.internal:7125
       - MACRO_MAP_PATH=/app/macro_map.json
-      - ACK_TIMEOUT_MS=500
-      - DONE_TIMEOUT_MS=30000
+      - ACK_TIMEOUT_MS=5000000
+      - DONE_TIMEOUT_MS=3000000
       - WAIT_IDLE=0
     volumes:
       - ./backend/bridge/macro_map.json:/app/macro_map.json:ro
@@ -117,37 +128,37 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # For Raspberry Pi SERIAL mode, uncomment:
-    # devices:
-    #   - "/dev/ttyUSB0:/dev/ttyUSB0"
+#    devices:
+ #     - "/dev/ttyUSB0:/dev/ttyUSB0"
 
   # ---- RFID Sidecar (MFRC522 -> MQTT) ----
-  # rfid:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile.rfid
-  #   restart: unless-stopped
-  #   environment:
-  #     - MQTT_HOST=mqtt
-  #     - MQTT_PORT=1883
-  #     - RFID_READER_ID=kiosk_1_reader_1
-  #     - RFID_DEFAULT_MODE=card
-  #     - RFID_UID_ONLY=1
-  #     - RFID_POLL_DELAY_S=0.05
-  #   depends_on:
-  #     mqtt:
-  #       condition: service_started
-  #   networks:
-  #     - internal
+  rfid:
+     build:
+       context: ./backend/app
+       dockerfile: Dockerfile.rfid
+     restart: unless-stopped
+     environment:
+       - MQTT_HOST=mqtt
+       - MQTT_PORT=1883
+       - RFID_READER_ID=haven_1_reader_1
+       - RFID_DEFAULT_MODE=card
+       - RFID_UID_ONLY=1
+       - RFID_POLL_DELAY_S=0.05
+     depends_on:
+       mqtt:
+         condition: service_started
+     networks:
+       - internal
     # IMPORTANT:
     # - On Windows dev, this container may fail if it requires Raspberry Pi GPIO/SPI libs.
     #   If so, either comment out this service locally or add a SIM mode to rfid script.
     #
     # For Raspberry Pi with real MFRC522 over SPI/GPIO, uncomment:
-    # privileged: true
-    # devices:
-    #   - "/dev/spidev0.0:/dev/spidev0.0"
-    #   - "/dev/spidev0.1:/dev/spidev0.1"
-    #   - "/dev/gpiomem:/dev/gpiomem"
+     privileged: true
+     devices:
+       - "/dev/spidev0.0:/dev/spidev0.0"
+       - "/dev/spidev0.1:/dev/spidev0.1"
+       - "/dev/gpiomem:/dev/gpiomem"
 
 networks:
   internal:
