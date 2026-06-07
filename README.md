@@ -15,18 +15,19 @@
 
 ---
 
-A student taps their UBC card, selects tools on a touchscreen kiosk, and the machine retrieves them — a gantry positions itself over the right carousel, rotates it to the target slot, and presents the tool at the door. Returns work in reverse. The system tracks loans, flags overdues, and sends email alerts. All services run in Docker on a Raspberry Pi.
+A student taps their UBC card, selects tools on a touchscreen kiosk, and the machine retrieves them — a gantry positions itself over the right carousel, rotates it to the target slot, and presents the tool at the door. Returns work in reverse. The system tracks loans, flags overdues, and sends email alerts. Everything runs in Docker on a Raspberry Pi.
 
-This is a capstone demo, not a production system. It runs end-to-end on real hardware but hasn't been hardened for unattended use.
+This is a capstone demo. It runs end-to-end on real hardware and was built with production in mind from the start — the session mechanism, schema, network isolation, and service topology are all production-quality decisions. Getting it the rest of the way is a set of specific, well-scoped additions, not a rewrite. More on that [below](#getting-to-production).
 
 ---
 
 ## Demo
 
 <div align="center">
-
-https://youtu.be/GPG5MJTYQkU
-
+  <a href="https://youtu.be/GPG5MJTYQkU">
+    <img src="https://img.youtube.com/vi/GPG5MJTYQkU/maxresdefault.jpg" alt="HAVEN Demo Video" width="720"/>
+  </a>
+  <br/><sub>▶ Click to watch on YouTube</sub>
 </div>
 
 ---
@@ -62,19 +63,25 @@ https://youtu.be/GPG5MJTYQkU
               gantry1 / gantry2 / horiz / cake steppers
 ```
 
-The frontend never touches hardware directly. It polls the backend over HTTP; the backend fires MQTT commands; the bridge translates those into Klipper G-code macros via Moonraker's HTTP API. Klipper handles stepper control on the BTT Octopus board.
+The frontend never touches hardware directly. It polls the backend over HTTP; the backend fires MQTT commands; the bridge translates those into Klipper G-code macros via Moonraker's HTTP API. Klipper handles all stepper control on the BTT Octopus board.
 
-The bridge has two modes set via `BRIDGE_MODE`: `MOONRAKER` calls real hardware, `SIM` runs a software simulation with configurable timing and fail rate — no physical machine required.
+The bridge runs in one of two modes set via `BRIDGE_MODE`:
+- `MOONRAKER` — real hardware via Moonraker's HTTP API
+- `SIM` — software simulation with configurable timing and fail rate, no physical machine required
 
 ---
 
 ## Hardware
 
-**Gantry and carousels**
+**Stepper axes**
 
-The machine has a horizontal axis (`manual_stepper horiz`) that positions the gantry over a carousel, dual vertical axes (`gantry1`, `gantry2`) that lift tools in and out of slots, and six carousel stepper motors — each carousel ("cake") has 6 slots, 60° per step.
+- `horiz` — horizontal axis, positions the gantry over a carousel
+- `gantry1`, `gantry2` — dual independent vertical axes, lifts tools in and out of slots
+- `cake0`–`cake5` — one stepper per carousel, 60° per slot step
 
-Vertical homing can't use Klipper's native `G28` because both sides of the gantry need to find their endstops independently. Instead, `vertical_home.py` jogs each side in small increments and polls Moonraker's endstop API until both trigger, then zeros both steppers.
+Each carousel ("cake") has 6 slots. The gantry moves horizontally to the target carousel, the vertical axes lower, the carousel rotates to the right slot, and the tool is picked up or deposited.
+
+Vertical homing can't use Klipper's native `G28` because both gantry sides need to find their endstops independently. `vertical_home.py` handles this by jogging each side in 1600-step increments and polling Moonraker's endstop API until both trigger, then zeroing both steppers.
 
 **Klipper macros (selected)**
 
@@ -96,7 +103,9 @@ SA_JOG_GANTRY_UP/DOWN DIST=<n>        manual jog (admin)
 <img src="assets/encoder_mux_pcb.png" alt="Encoder Multiplexer PCB" width="500"/>
 </div>
 
-Each carousel has an AS5600 magnetic absolute encoder. Since all AS5600s share I2C address `0x36`, a TCA9548A multiplexer switches between them. An ESP32 reads all six, persists per-carousel zero offsets to EEPROM, and exposes a simple serial command interface. When `ENCODER_SERIAL_ENABLED=1`, the bridge reads angle before and after each rotation and fires an alert if the delta is outside tolerance. It's a sanity check — mismatches are logged and surfaced in the admin panel, but the operation isn't halted.
+Each carousel has an AS5600 magnetic absolute encoder. Since all AS5600s share I2C address `0x36`, a TCA9548A multiplexer switches between them. An ESP32 reads all six, persists per-carousel zero offsets to EEPROM, and exposes a simple serial command interface.
+
+When `ENCODER_SERIAL_ENABLED=1`, the bridge reads the angle before and after each carousel rotation and fires an alert if the measured delta is outside tolerance. Mismatches are logged and surfaced in the admin panel — it's a sanity check, not a safety gate; the operation still completes.
 
 **NFC student card**
 
@@ -104,7 +113,7 @@ Each carousel has an AS5600 magnetic absolute encoder. Since all AS5600s share I
 <img src="assets/custom_pcb_card.png" alt="Custom NFC card PCB" width="400"/>
 </div>
 
-The authentication card is a custom PCB — originally a personal side project to make a business-card-sized NFC tag. It's ISO 14443 compliant, so the MFRC522 reads it identically to any standard card. No firmware changes were needed to support it.
+The authentication card is a custom PCB — originally a personal side project to build a business-card-sized NFC tag. It turned out to be directly useful here: it's ISO 14443 compliant, so the MFRC522 reads it identically to any standard card. No firmware changes were needed.
 
 ---
 
@@ -158,7 +167,7 @@ Full diagrams with per-stage MQTT events and Moonraker calls: [`docs/system-over
 | Firmware | Arduino/PlatformIO, ESP32, AS5600, TCA9548A |
 | Infrastructure | Docker Compose, Nginx |
 | Notifications | SendGrid |
-| Hardware | BTT Octopus MAX EZ, MFRC522 RFID, NEMA steppers |
+| Hardware | BTT Octopus MAX EX, MFRC522 RFID, NEMA steppers |
 
 ---
 
@@ -202,17 +211,17 @@ docker compose up --build
 | Service | URL |
 |---|---|
 | Kiosk | http://localhost:8080 |
-| Backend | http://localhost:5000 |
+| Backend API | http://localhost:5000 |
 | MQTT Web UI | http://localhost:8090 |
 | DB Admin | http://localhost:8083 |
 
 The database is created automatically at `./data/igen.db` on first run.
 
-`5000:8000` is a dev convenience — in production, remove that port mapping and let Nginx proxy the backend internally. It's already on the `internal` Docker network; nothing outside the host needs to reach it directly.
+> `5000:8000` is a dev convenience. In production, remove the port mapping — the backend is already on the `internal` Docker network and Nginx proxies it. Nothing outside the host should reach port 8000 directly.
 
 ### 3. Create the first admin user
 
-There's no seed data. The admin endpoints have no auth guard (see [rough edges](#rough-edges)), so you can bootstrap directly:
+There's no seed data. `POST /api/admin/users` has no auth guard (see [rough edges](#rough-edges)), so you can bootstrap directly:
 
 ```bash
 curl -s -X POST http://localhost:5000/api/admin/users \
@@ -226,15 +235,17 @@ curl -s -X POST http://localhost:5000/api/admin/users \
   }'
 ```
 
-If you don't have your card UID yet, omit `card_id` and patch it in after scanning. The API's interactive docs at `http://localhost:5000/docs` work fine for this too.
+If you don't have your card UID yet, omit `card_id` and patch it in after scanning. The interactive API docs at `http://localhost:5000/docs` work for this too.
 
 ### 4. Seed inventory
 
-Before anything can be dispensed, you need tool models (`POST /api/admin/tool-models`) and tool items (`POST /api/admin/tool-items`) with their RFID tags and carousel slot assignments.
+Before anything can be dispensed, you need:
+- **Tool models** (`POST /api/admin/tool-models`) — tool type, name, max loan hours, max quantity per user
+- **Tool items** (`POST /api/admin/tool-items`) — links a physical item to a model, assigns it to a carousel slot, and registers its RFID tag
 
 ### Running against real hardware
 
-Set `BRIDGE_MODE=MOONRAKER` and point `MOONRAKER_URL` at your Moonraker instance. The RFID sidecar needs SPI/GPIO access to the MFRC522 — the relevant device mounts are already in `docker-compose.yaml`, just uncomment them.
+Set `BRIDGE_MODE=MOONRAKER` and point `MOONRAKER_URL` at your Moonraker instance. The RFID sidecar needs SPI/GPIO access to the MFRC522 — the relevant device mounts are in `docker-compose.yaml`, just uncomment them.
 
 Crowsnest (Klipper camera streaming) runs as a system service on the Pi, not in Docker. Set its port to `8091` to avoid conflicting with the kiosk on `8080`:
 
@@ -255,7 +266,7 @@ max_fps: 20
 Tailnet-only (recommended for admin tools):
 
 ```bash
-tailscale serve --bg http://localhost:8080   # kiosk at https://<hostname>.ts.net
+tailscale serve --bg http://localhost:8080          # kiosk
 tailscale serve --bg --tcp 8090 tcp://localhost:8090  # MQTT Web UI
 tailscale serve --bg --tcp 8083 tcp://localhost:8083  # DB Admin
 tailscale serve --bg --tcp 8091 tcp://localhost:8091  # Crowsnest camera
@@ -268,37 +279,35 @@ tailscale serve --bg http://localhost:8080
 tailscale funnel --bg 443
 ```
 
-Keep the MQTT broker (1883), Moonraker (7125), and the backend (5000) off Tailscale entirely — none of them have auth.
+Keep the MQTT broker (1883), Moonraker (7125), and the raw backend (5000) off Tailscale — none of them have auth.
 
 ---
 
 ## Rough edges
 
-**Klipper positions aren't in physical units.** Reported positions (`horizontal_position`, `vertical_position`) are raw step-count values, not millimeters. When we switched to Klipper from the previous control architecture, `rotation_distance` was never configured on the `MANUAL_STEPPER` definitions. Calibration is done empirically in step units; the numbers the admin panel shows are meaningless without context.
+The architecture was designed with production in mind — network isolation, PostgreSQL-compatible schema, cryptographically secure sessions with revocation and role enforcement are all there. These are the specific gaps that didn't get closed before the demo:
 
-**Admin routes have no auth.** Anything that can reach port 5000 can create users, modify loans, or trigger hardware. The kiosk flow uses RFID-issued session tokens; the admin panel was protected by network isolation rather than credentials. This was fine for a closed demo, not fine for anything else.
-
-**No passwords, no JWT.** There are no credentials in the system. Sessions are a random token in an HTTP-only cookie, issued after a card scan. Admin access is by role field, not a separate login. It worked for the demo.
-
-**No crash recovery.** If the bridge crashes mid-dispense, `loan_requests.hw_status` stays `in_progress` and the machine's physical state is unknown. Fix it by rehoming and manually updating the DB.
-
-**Door timeout creates unconfirmed loans.** The bridge waits 20s (`DOOR_CONFIRM_TIMEOUT_S`) for the user to confirm they've taken the tool. On timeout it marks the dispense succeeded anyway — the loan is created without `confirmed_at`.
-
-**Encoder mismatches don't stop anything.** A rotation that doesn't match the expected angle triggers an admin alert and nothing else. The operation completes, the discrepancy is logged.
+- **Admin routes have no auth guard.** `require_admin_user()` is fully implemented in `auth.py` — it just isn't applied to the `/api/admin/*` routes yet. Anything that can reach port 5000 can create users, modify loans, or trigger hardware. Network isolation protected it for the demo.
+- **No password-based admin login.** Sessions are issued after an RFID card scan — the kiosk flow is solid. There's no separate credential login for the admin web panel; access is by network position and role field.
+- **Klipper positions are in step units, not millimeters.** `rotation_distance` was never configured on the `MANUAL_STEPPER` definitions. Calibration is empirical; the position numbers in the admin panel are meaningless without knowing the motor specs.
+- **No crash recovery for in-progress hardware ops.** If the bridge crashes mid-dispense, `loan_requests.hw_status` stays `in_progress` and the machine's physical state is unknown. Recovery is manual: rehome, update the DB.
+- **Door timeout creates unconfirmed loans.** The bridge waits 20s (`DOOR_CONFIRM_TIMEOUT_S`) for the user to confirm they've taken the tool. On timeout it marks the dispense as complete — the loan is created without `confirmed_at`.
+- **Encoder mismatches don't stop operations.** A rotation that doesn't match the expected encoder delta triggers an admin alert, not a halt. The operation completes; the discrepancy is logged.
 
 ---
 
-## What's missing for production
+## Getting to production
 
-**Auth.** Admin routes need session guards and hashed credentials. The RFID kiosk flow is fine; the `/api/admin/*` surface isn't.
+Most of this is wiring up decisions that were already made, not new design work:
 
-**Cloud database.** The schema is already PostgreSQL-compatible (SQLAlchemy 2.0, standard types). Migrating is a `DATABASE_URL` change plus a migration run. A managed Postgres instance would also enable proper backups and multi-site setups.
-
-**Physical coordinates in Klipper.** Setting `rotation_distance` correctly on the `MANUAL_STEPPER` definitions would map G-code positions to millimeters and make calibration significantly less painful.
-
-**Encoder auto-correction.** The pieces exist — the bridge already reads encoder angle before and after each move (`ENCODER_CONFIRM_ENABLED`), and `SA_JOG_CAKE_REL` can apply a delta correction. What's not written is the loop: measure residual error, jog to correct, re-verify. Right now it just alerts.
-
-**Email alert recipients.** The overdue alert recipient is hardcoded in `admin.py`. It needs to be a configurable field.
+- **Apply auth guards** — `require_admin_user()` already exists in `auth.py`; add `Depends(require_admin)` to the admin routes
+- **Add admin credentials** — a password field + bcrypt hash on `User`, swap the card-scan login for a form-based login on the admin panel
+- **Enable cookie security flags** — set `SESSION_COOKIE_SECURE=1` in the prod env; already handled in `auth.py`
+- **Swap SQLite for Postgres** — the schema uses SQLAlchemy 2.0 with standard types and proper indexes throughout; it's a `DATABASE_URL` change plus `alembic upgrade head`
+- **Backend restart policy** — change `restart: no` → `restart: unless-stopped` and uncomment the healthcheck in `docker-compose.yaml`
+- **Email config** — the overdue alert recipient is hardcoded in `admin.py`; pull it into an env var
+- **Klipper coordinate units** — set `rotation_distance` correctly on the `MANUAL_STEPPER` definitions to get positions in mm
+- **Encoder auto-correction** — the pieces are already there: the bridge reads encoder angle before and after each move, and `SA_JOG_CAKE_REL` can apply a delta; the missing piece is the measurement→correct→verify loop
 
 ---
 
@@ -312,6 +321,7 @@ igen-shop-assistant/
 │   │   ├── vertical_home.py   # Python-assisted dual-gantry homing
 │   │   ├── mqtt.py            # MQTT subscriber + event dispatch
 │   │   ├── models.py          # SQLAlchemy ORM
+│   │   ├── auth.py            # Session tokens, revocation, role guards
 │   │   ├── routers/           # FastAPI route handlers
 │   │   └── usecases/          # Dispense/return orchestration
 │   ├── ui/src/
