@@ -1,3 +1,13 @@
+# HAVEN: System Sequence Diagrams
+
+Full-detail sequence diagrams for each major flow.
+
+**Hardware note:** All motor control goes through Klipper via the Moonraker HTTP API. The Bridge sidecar (`bridge.py`) translates MQTT commands into G-code macros (`SA_MOVE_TO_CAKE`, `SA_ROTATE_TO_DISPENSE`, `SA_PARK`, etc.) sent to `POST /printer/gcode/script`. There is no serial protocol to an ESP32 or CAN bus. The sequence diagrams below abbreviate this as "Bridge → Klipper" for readability.
+
+For a detailed breakdown of what the bridge does per step see [`comms-topology.md`](comms-topology.md).
+
+---
+
 ## Authentication
 
 ```mermaid
@@ -71,10 +81,9 @@ sequenceDiagram
     participant DB as SQLite
     participant MQ as MQTT Broker
     participant MQTT as Backend MQTT Listener<br/>mqtt.py
-    participant BR as Bridge Sidecar<br/>bridge.py (MQTT<->Serial)
-    participant ESPM as ESP32 Master MCU<br/>(serial endpoint)
-    participant GAN as Gantry MCU (slave)<br/>(CAN node id fixed)
-    participant CAK as Cake MCU (slave)<br/>(CAN node id fixed)
+    participant BR as Bridge Sidecar<br/>bridge.py (MQTT→Moonraker)
+    participant MR as Moonraker API<br/>(:7125)
+    participant KL as Klipper<br/>(BTT Octopus MAX EZ)
     participant RFID as RFID Sidecar<br/>rfid_service.py
 
     %% ========== DISPENSE REQUEST ==========
@@ -95,37 +104,51 @@ sequenceDiagram
 
     %% ========== HARDWARE PIPELINE ==========
     MQ-->>BR: MESSAGE igen/cmd/dispense
-    Note right of BR: bridge.py handle_dispense()<br/>publishes stage=accepted, sets timers
-    BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"accepted", error_code:null, ts}
-    BR->>ESPM: Serial: "DISPENSE <request_id> <slot_id>\n"
+    Note right of BR: bridge.py _execute_request("dispense")<br/>runs in background thread
+    BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"accepted", ts}
+    BR->>MR: GET /printer/info<br/>GET /printer/objects/query
+    Note right of MR: check klippy_state=ready<br/>check not in error/shutdown
+    MR-->>BR: machine status OK
 
-    %% Master MCU expands into slave sequence (gantry then cake)
-    Note over ESPM,GAN: Master decodes slot_id -> (cake_id, target_index, gantry_pos)<br/>or maps tool_item_id -> location
-    ESPM->>GAN: CAN cmd: DOCK_TO <gantry_pos> (node id = GANTRY_ID)
-    GAN-->>ESPM: CAN ack: DOCKED_OK or DOCKED_FAIL(code)
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"in_progress"}
 
-    alt Gantry docking failed
-        ESPM-->>BR: Serial "ACK <request_id>" (optional early ack)
-        ESPM-->>BR: Serial "DISPENSE_FAIL <request_id> JAM_GANTRY"
-        Note right of BR: bridge.py publishes failed + clears timers
-        BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"failed", error_code:"JAM_GANTRY", ts}
-    else Gantry docking OK
-        ESPM-->>BR: Serial "ACK <request_id>"
-        Note right of BR: ACK cancels ACK tim publishes in_progress
-        BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"in_progress", ts}
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"move_to_cake"}
+    BR->>MR: POST /printer/gcode/script<br/>{"script": "SA_MOVE_TO_CAKE CAKE=<n>"}
+    MR->>KL: execute gcode macro
+    KL-->>MR: ok
+    MR-->>BR: HTTP 200
 
-        ESPM->>CAK: CAN cmd: ROTATE_TO <cake_id,target_index> (node id = CAKE_ID)
-        CAK-->>ESPM: CAN status: ROTATING...
-        CAK-->>ESPM: CAN done: ROTATE_OK or ROTATE_FAIL(code)
-
-        alt Cake rotation failed
-            ESPM-->>BR: Serial "DISPENSE_FAIL <request_id> ENC_MISMATCH"
-            BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"failed", error_code:"ENC_MISMATCH", ts}
-        else Cake rotation OK + dispense succeeded
-            ESPM-->>BR: Serial "DISPENSE_OK <request_id>"
-            BR->>MQ: PUBLISH igen/evt/dispense<br/>{request_id, stage:"succeeded", ts}
-        end
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"rotate_cake"}
+    Note right of BR: computes slot delta (signed shortest path)<br/>builds rotation script
+    loop N × 60° steps
+        BR->>MR: POST /printer/gcode/script<br/>{"script": "MOVE_CAKE_CW_60 CAKE=<n>"}
+        MR->>KL: execute
+        KL-->>MR: ok
     end
+    BR->>MR: POST /printer/gcode/script<br/>{"script": "SA_ROTATE_TO_DISPENSE CAKE=<n>"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"move_to_door"}
+    BR->>MR: POST /printer/gcode/script {"script": "SA_MOVE_TO_DOOR"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"waiting_user_confirm"}
+    Note right of BR: bridge blocks thread waiting for<br/>igen/cmd/hardware/confirm (timeout: 20s)
+
+    alt User confirms (taps confirm or RFID) within timeout
+        MQ-->>BR: MESSAGE igen/cmd/hardware/confirm {request_id}
+    else Timeout — auto-complete as unconfirmed
+        Note right of BR: loan still created, confirmed_at left null
+    end
+
+    BR->>MQ: PUBLISH igen/evt/dispense {stage:"park"}
+    BR->>MR: POST /printer/gcode/script {"script": "SA_PARK"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/dispense<br/>{stage:"succeeded", cake_id, source_slot, target_slot}
 
     %% ========== BACKEND EVENT APPLY ==========
     MQ-->>MQTT: MESSAGE igen/evt/dispense
@@ -166,9 +189,9 @@ sequenceDiagram
         end
     end
 
-    %% Confirm pickup in DB (you need this route/usecase)
-    FE->>BE: POST /dispense/confirm<br/>{user_id, tool_tag_id:"987..."}
-    Note right of BE: routes/user.py (confirm route) should:
+    %% Confirm pickup in DB
+    FE->>BE: POST /dispense/requests/{request_id}/confirm<br/>{tool_tag_id:"987..."}
+    Note right of BE: routes/user.py dispense_confirm_request()
     Note right of BE: 1) find ToolItem by tool_tag_id
     Note right of BE: 2) match pending dispensed LoanRequest for user/tool_item
     Note right of BE: 3) create Loan + set confirmed_at
@@ -191,10 +214,9 @@ sequenceDiagram
     participant DB as SQLite
     participant MQ as MQTT Broker
     participant MQTT as Backend MQTT Listener<br/>mqtt.py
-    participant BR as Bridge Sidecar<br/>bridge.py
-    participant ESPM as ESP32 Master MCU
-    participant GAN as Gantry MCU
-    participant CAK as Cake MCU
+    participant BR as Bridge Sidecar<br/>bridge.py (MQTT→Moonraker)
+    participant MR as Moonraker API<br/>(:7125)
+    participant KL as Klipper<br/>(BTT Octopus MAX EZ)
     participant RFID as RFID Sidecar
 
     %% ================= RETURN: require card scan first (your UX rule) =================
@@ -238,30 +260,47 @@ sequenceDiagram
         BEU->>MQ: PUBLISH igen/cmd/return<br/>{request_id, action:"return", user_id, tool_item_id, slot_id, ts}
     end
 
-    %% Hardware: gantry then cake (reverse process if needed)
+    %% Hardware pipeline
     MQ-->>BR: MESSAGE igen/cmd/return
     BR->>MQ: PUBLISH igen/evt/return {request_id, stage:"accepted"}
-    BR->>ESPM: Serial "RETURN <request_id> <slot_id>\n"
+    BR->>MR: GET /printer/info (assert machine ready)
+    MR-->>BR: ok
+    BR->>MQ: PUBLISH igen/evt/return {stage:"in_progress"}
 
-    ESPM->>GAN: CAN DOCK_TO <gantry_pos>
-    GAN-->>ESPM: DOCKED_OK/FAIL
-    alt Dock failed
-        ESPM-->>BR: "ACK <rid>"
-        ESPM-->>BR: "RETURN_FAIL <rid> JAM_GANTRY"
-        BR->>MQ: PUBLISH igen/evt/return {stage:"failed", error_code:"JAM_GANTRY"}
-    else Dock ok
-        ESPM-->>BR: "ACK <rid>"
-        BR->>MQ: PUBLISH igen/evt/return {stage:"in_progress"}
-        ESPM->>CAK: CAN ROTATE_TO <cake_id,target_index>
-        CAK-->>ESPM: ROTATE_OK/FAIL
-        alt Rotate fail
-            ESPM-->>BR: "RETURN_FAIL <rid> ENC_MISMATCH"
-            BR->>MQ: PUBLISH igen/evt/return {stage:"failed", error_code:"ENC_MISMATCH"}
-        else Return ok
-            ESPM-->>BR: "RETURN_OK <rid>"
-            BR->>MQ: PUBLISH igen/evt/return {stage:"succeeded"}
-        end
+    BR->>MQ: PUBLISH igen/evt/return {stage:"move_to_door"}
+    BR->>MR: POST /printer/gcode/script {"script":"SA_MOVE_TO_DOOR"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/return {stage:"waiting_user_insert"}
+    Note right of BR: bridge blocks waiting for igen/cmd/hardware/confirm<br/>(timeout: 20s — on timeout, parks and fails)
+
+    alt User places tool and confirms
+        MQ-->>BR: MESSAGE igen/cmd/hardware/confirm {request_id}
+    else Timeout
+        BR->>MR: POST /printer/gcode/script {"script":"SA_PARK"}
+        BR->>MQ: PUBLISH igen/evt/return {stage:"failed", error_code:"USER_INSERT_TIMEOUT"}
     end
+
+    BR->>MQ: PUBLISH igen/evt/return {stage:"move_to_cake"}
+    BR->>MR: POST /printer/gcode/script {"script":"SA_MOVE_TO_CAKE_RET CAKE=<n>"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    Note right of BR: bounded return: rotate CCW 1 slot to clear the window<br/>then settle with SA_ROTATE_TO_RETURN
+    BR->>MQ: PUBLISH igen/evt/return {stage:"rotate_cake"}
+    BR->>MR: POST /printer/gcode/script {"script":"MOVE_CAKE_CCW_60 CAKE=<n>"}
+    BR->>MR: POST /printer/gcode/script {"script":"SA_ROTATE_TO_SLOT CAKE=<n> SLOT=<target>"}
+    BR->>MR: POST /printer/gcode/script {"script":"SA_ROTATE_TO_RETURN CAKE=<n>"}
+    MR->>KL: execute each
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/return {stage:"park"}
+    BR->>MR: POST /printer/gcode/script {"script":"SA_PARK"}
+    MR->>KL: execute
+    KL-->>MR: ok
+
+    BR->>MQ: PUBLISH igen/evt/return {stage:"succeeded", cake_id, source_slot, target_slot, final_current_slot}
 
     %% Backend applies return events to DB
     MQ-->>MQTT: MESSAGE igen/evt/return
@@ -284,15 +323,18 @@ sequenceDiagram
     BEA->>MQ: PUBLISH igen/cmd/admin_test/motor<br/>{request_id, motor_id, action}
     BEA-->>FE: 200 {request_id}
 
-    %% Bridge handles admin test topic and publishes admin test events
+    %% Bridge handles admin test: runs real Klipper moves, no DB changes
     MQ-->>BR: MESSAGE igen/cmd/admin_test/motor
-    BR->>MQ: PUBLISH igen/evt/admin_test/motor<br/>{request_id, motor_id, action, stage:"accepted"}
-    BR->>ESPM: Serial "DISPENSE|RETURN <rid> <motor_id>\n" (temporary mapping)
-
-    %% Admin test completion event
-    ESPM-->>BR: "ACK <rid>" (optional)
+    BR->>MQ: PUBLISH igen/evt/admin_test/motor {stage:"accepted"}
+    Note right of BR: asserts machine homed before proceeding
+    BR->>MR: GET /printer/info (assert ready + homed)
+    MR-->>BR: ok
     BR->>MQ: PUBLISH igen/evt/admin_test/motor {stage:"in_progress"}
-    ESPM-->>BR: "..._OK <rid>" OR "..._FAIL <rid> <err>"
+
+    Note right of BR: dispense test: move_to_cake → rotate slot 0→1<br/>→ rotate_to_dispense → move_to_door → 5s dwell → park
+    BR->>MR: POST /printer/gcode/script (SA_MOVE_TO_CAKE, rotate macros, SA_MOVE_TO_DOOR, SA_PARK)
+    MR->>KL: execute each macro
+    KL-->>MR: ok (or error)
     BR->>MQ: PUBLISH igen/evt/admin_test/motor {stage:"succeeded|failed", error_code?}
 
     %% Backend mqtt.py handler updates in-memory test status only
